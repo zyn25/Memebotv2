@@ -1,10 +1,5 @@
 """
-Token Scanner — Multi-source detection (ULTIMATE)
-Sources: Raydium WS + DexScreener + Jupiter + Pump.fun + Helius DAS
-+ IMPERSONATOR FILTER
-+ ANTI-FOMO FILTER
-+ VOLUME DROP CHECK
-+ SCANNER AUTO RESET
+Token Scanner - Multi-source detection (ULTIMATE)
 """
 import asyncio
 import json
@@ -12,26 +7,15 @@ import aiohttp
 import websockets
 from typing import Callable, Optional, List
 from config import config
-from utils.logger import logger
-try:
-    from utils.logger import log_scan
-except ImportError:
-    def log_scan(addr, detail=""):
-        logger.info("[SCAN] " + addr[:12] + "... | " + detail)
-
+from utils.logger import logger, log_scan
 from utils.helpers import is_valid_solana_address, current_timestamp
 
 
-# ============================================
-# IMPERSONATOR FILTER
-# ============================================
 FAKE_TOKEN_SYMBOLS = {
     "SOL", "USDC", "USDT", "BTC", "ETH", "JUP", "RAY",
     "BONK", "WIF", "ORCA", "MNGO", "SAMO", "FIDA",
-    "STEP", "PORT", "MEDIA", "ROPE", "TULIP", "SLND",
     "PYTH", "SRM", "FET", "RNDR", "RENDER", "W",
     "TNSR", "JTO", "WEN", "MYRO", "POPCAT", "MEW",
-    "CATO", "PONKE", "BOME", "GUMMY", "SLERF",
     "NEAR", "AVAX", "LINK", "UNI", "AAVE", "DOT",
     "ADA", "XRP", "DOGE", "SHIB", "PEPE", "FLOKI",
     "ARB", "OP", "MATIC", "SUI", "APT", "SEI",
@@ -40,8 +24,6 @@ FAKE_TOKEN_SYMBOLS = {
 FAKE_TOKEN_NAMES = {
     "solana", "bitcoin", "ethereum", "jupiter", "tether",
     "usd coin", "binance", "cardano", "dogecoin", "shiba",
-    "ripple", "avalanche", "polkadot", "chainlink", "uniswap",
-    "aave", "render", "near protocol", "sei",
 }
 
 
@@ -96,32 +78,20 @@ class TokenScanner:
             except Exception as e:
                 logger.error("Callback error: " + str(e))
 
-    # ============================================
-    # IMPERSONATOR + ANTI-FOMO CHECK
-    # ============================================
     def _check_impersonator(self, td):
         symbol = td.get("symbol", "")
         name = td.get("name", "")
         addr = td.get("address", "")
-
-        # Filter token tanpa nama
         if symbol in ("", "???", "UNKNOWN", "unknown"):
             self.blocked_tokens.add(addr)
-            logger.warning("BLOCKED NO SYMBOL: " + addr[:16])
             return True
-
         if name in ("", "Unknown", "unknown", "UNKNOWN"):
             self.blocked_tokens.add(addr)
-            logger.warning("BLOCKED NO NAME: " + addr[:16])
             return True
-
-        # Check impersonator
         if is_impersonator_token(symbol, name):
             self.blocked_tokens.add(addr)
-            logger.warning("BLOCKED IMPERSONATOR: " + symbol + " (" + name + ") | " + addr[:16])
+            logger.warning("BLOCKED IMPERSONATOR: " + symbol + " | " + addr[:16])
             return True
-
-        # Check known scam addresses
         known_scam = {
             "So11111111111111111111111111111111111111112",
             "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
@@ -129,77 +99,44 @@ class TokenScanner:
         }
         if addr in known_scam:
             self.blocked_tokens.add(addr)
-            logger.warning("BLOCKED KNOWN MINT: " + addr[:16])
             return True
-
-        # Check supply = 0
-        supply = td.get("supply", 0)
-        if supply == 0:
-            price = td.get("price_usd", 0)
-            mcap = td.get("market_cap", 0)
-            if price > 0 and mcap == 0:
-                logger.warning("BLOCKED ZERO MCAP: " + symbol + " | " + addr[:16])
-                self.blocked_tokens.add(addr)
-                return True
-
-        # ANTI-FOMO: Sudah pump >200% dalam 5 menit
         pc5m = td.get("price_change_5m", 0)
         if pc5m and pc5m > 200:
             self.blocked_tokens.add(addr)
             logger.warning("BLOCKED FOMO: " + symbol + " | +" + str(pc5m) + "% in 5m")
             return True
-
-        # ANTI-FOMO: Sudah pump >500% dalam 1 jam
         pc1h = td.get("price_change_1h", 0)
         if pc1h and pc1h > 500:
             self.blocked_tokens.add(addr)
-            logger.warning("BLOCKED FOMO 1H: " + symbol + " | +" + str(pc1h) + "% in 1h")
             return True
-
         return False
 
-    # ============================================
-    # VOLUME DROP CHECK
-    # ============================================
     def _check_volume_drop(self, td):
-        """Return True kalau volume dropping"""
-        sym = td.get("symbol", "???")
         vol_1h = td.get("volume_1h", 0)
         vol_5m = td.get("volume_5m", 0)
-
         if vol_1h > 0 and vol_5m >= 0:
             expected_5m = vol_1h / 12
             if expected_5m > 0:
                 vol_ratio = vol_5m / expected_5m
                 if vol_ratio < 0.3:
-                    logger.info("SKIP " + sym + ": Volume dropping (" + str(round(vol_ratio, 2)) + ")")
                     return True
-
         return False
 
-    # SOURCE 1: RAYDIUM WS
     async def _scan_raydium_ws(self):
         fail_count = 0
-        max_fails = 5
         while self.running:
             try:
                 uri = config.rpc.solana_ws
                 if not uri or "mainnet-beta.solana.com" in uri:
-                    logger.warning("Raydium WS: Invalid URL, skip")
                     await asyncio.sleep(60)
                     continue
-
-                logger.info("Raydium WS: Connecting to " + uri[:50] + "...")
-                async with websockets.connect(
-                    uri, ping_interval=20, ping_timeout=10,
-                    close_timeout=5, max_size=2**20
-                ) as ws:
+                async with websockets.connect(uri, ping_interval=20, ping_timeout=10, close_timeout=5) as ws:
                     fail_count = 0
                     await ws.send(json.dumps({
                         "jsonrpc": "2.0", "id": 1, "method": "logsSubscribe",
                         "params": [{"mentions": [self.RAYDIUM_AMM]}, {"commitment": "confirmed"}]
                     }))
-                    logger.info("Raydium WS: Connected & Subscribed")
+                    logger.info("Raydium WS connected")
                     async for msg in ws:
                         if not self.running:
                             break
@@ -210,14 +147,11 @@ class TokenScanner:
                             continue
             except websockets.exceptions.ConnectionClosed:
                 fail_count += 1
-                w = min(30 * fail_count, 300)
-                logger.warning("Raydium WS: Disconnected, retry in " + str(w) + "s")
-                await asyncio.sleep(w)
+                await asyncio.sleep(min(30 * fail_count, 300))
             except Exception as e:
                 fail_count += 1
-                w = min(30 * fail_count, 120) if fail_count < max_fails else 300
-                logger.error("Raydium WS error: " + str(e)[:80] + " | retry in " + str(w) + "s")
-                await asyncio.sleep(w)
+                logger.error("Raydium WS error: " + str(e)[:80])
+                await asyncio.sleep(min(30 * fail_count, 120))
 
     async def _process_raydium(self, data):
         try:
@@ -230,9 +164,7 @@ class TokenScanner:
                 return
             tokens = self._extract_tokens(logs)
             for t in tokens:
-                if t in self.seen_tokens:
-                    continue
-                if t in self.blocked_tokens:
+                if t in self.seen_tokens or t in self.blocked_tokens:
                     continue
                 if not is_valid_solana_address(t):
                     continue
@@ -262,14 +194,12 @@ class TokenScanner:
                         tokens.append(c)
         return tokens
 
-    # SOURCE 2: DEXSCREENER
     async def _poll_dexscreener(self):
         while self.running:
             try:
                 async with self.session.get(
                     "https://api.dexscreener.com/token-profiles/latest/v1",
-                    timeout=aiohttp.ClientTimeout(total=30)) as r:
-
+                    timeout=aiohttp.ClientTimeout(total=15)) as r:
                     if r.status == 200:
                         data = await r.json()
                         for item in data:
@@ -277,9 +207,7 @@ class TokenScanner:
                             addr = item.get("tokenAddress", "")
                             if chain != "solana":
                                 continue
-                            if addr in self.seen_tokens:
-                                continue
-                            if addr in self.blocked_tokens:
+                            if addr in self.seen_tokens or addr in self.blocked_tokens:
                                 continue
                             if not is_valid_solana_address(addr):
                                 continue
@@ -303,9 +231,7 @@ class TokenScanner:
                                 continue
                             base = pair.get("baseToken", {})
                             addr = base.get("address", "")
-                            if not addr or addr in self.seen_tokens:
-                                continue
-                            if addr in self.blocked_tokens:
+                            if not addr or addr in self.seen_tokens or addr in self.blocked_tokens:
                                 continue
                             if not is_valid_solana_address(addr):
                                 continue
@@ -322,15 +248,9 @@ class TokenScanner:
                                 await self._notify(td)
             except Exception as e:
                 logger.error("DexScreener error: " + str(e))
-
-            # AUTO RESET: Clear seen_tokens kalau >50000
             if len(self.seen_tokens) > 50000:
-                logger.info("Scanner reset: clearing " + str(len(self.seen_tokens)) + " seen tokens")
                 self.seen_tokens.clear()
-
             await asyncio.sleep(30)
-
-    # SOURCE 3: JUPITER
     async def _poll_jupiter(self):
         while self.running:
             try:
@@ -347,7 +267,6 @@ class TokenScanner:
                 logger.error("Jupiter poll error: " + str(e))
             await asyncio.sleep(120)
 
-    # SOURCE 4: PUMP.FUN
     async def _poll_pumpfun(self):
         while self.running:
             try:
@@ -359,9 +278,7 @@ class TokenScanner:
                         coins = data if isinstance(data, list) else data.get("coins", [])
                         for coin in coins[:20]:
                             addr = coin.get("mint", "") or coin.get("address", "")
-                            if not addr or addr in self.seen_tokens:
-                                continue
-                            if addr in self.blocked_tokens:
+                            if not addr or addr in self.seen_tokens or addr in self.blocked_tokens:
                                 continue
                             if not is_valid_solana_address(addr):
                                 continue
@@ -389,12 +306,10 @@ class TokenScanner:
                 logger.debug("PumpFun error: " + str(e)[:50])
             await asyncio.sleep(15)
 
-    # METADATA FETCHING
     async def _fetch_meta(self, addr):
         td = await self._fetch_dexscreener_detail(addr)
         if td and td.get("price_usd", 0) > 0:
             return td
-
         if config.rpc.birdeye_key:
             try:
                 headers = {"X-API-KEY": config.rpc.birdeye_key, "x-chain": "solana"}
@@ -417,7 +332,6 @@ class TokenScanner:
                             }
             except:
                 pass
-
         td = await self._fetch_meta_helius(addr)
         if td:
             ds = await self._fetch_dexscreener_detail(addr)
@@ -434,7 +348,6 @@ class TokenScanner:
                     "telegram": ds.get("telegram", ""),
                 })
             return td
-
         try:
             payload = {"jsonrpc": "2.0", "id": 1, "method": "getTokenSupply", "params": [addr]}
             async with self.session.post(config.rpc.solana_rpc, json=payload,
@@ -452,7 +365,6 @@ class TokenScanner:
         except:
             return None
 
-    # DEXSCREENER DETAIL
     async def _fetch_dexscreener_detail(self, addr):
         try:
             url = "https://api.dexscreener.com/latest/dex/tokens/" + addr
@@ -462,11 +374,9 @@ class TokenScanner:
                     pairs = data.get("pairs", [])
                     if not pairs:
                         return None
-
                     solana_pairs = [p for p in pairs if p.get("chainId") == "solana"]
                     if not solana_pairs:
                         solana_pairs = pairs
-
                     best_pair = None
                     best_vol = 0
                     for pair in solana_pairs:
@@ -474,7 +384,6 @@ class TokenScanner:
                         if vol > best_vol:
                             best_vol = vol
                             best_pair = pair
-
                     if not best_pair or best_vol == 0:
                         best_liq = 0
                         for pair in solana_pairs:
@@ -482,10 +391,8 @@ class TokenScanner:
                             if liq > best_liq:
                                 best_liq = liq
                                 best_pair = pair
-
                     if not best_pair:
                         best_pair = solana_pairs[0]
-
                     return self._pair_to_data(best_pair)
             return None
         except Exception as e:
@@ -505,13 +412,11 @@ class TokenScanner:
             info = pair.get("info", {})
             websites = info.get("websites", [])
             socials = info.get("socials", [])
-
             price_str = pair.get("priceUsd", "0") or "0"
             try:
                 price = float(price_str)
             except:
                 price = 0
-
             mcap = pair.get("marketCap", 0) or pair.get("fdv", 0) or 0
             website = websites[0].get("url", "") if websites else ""
             twitter = ""
@@ -522,7 +427,6 @@ class TokenScanner:
                     twitter = s.get("url", "")
                 elif stype == "telegram":
                     telegram = s.get("url", "")
-
             return {
                 "address": base.get("address", ""), "name": base.get("name", "Unknown"),
                 "symbol": base.get("symbol", "???"), "decimals": 9,
@@ -548,7 +452,6 @@ class TokenScanner:
             logger.error("Parse pair error: " + str(e))
             return None
 
-    # HELIUS DAS
     async def _fetch_meta_helius(self, addr):
         if not config.rpc.helius_key:
             return None
@@ -577,24 +480,6 @@ class TokenScanner:
         except:
             return None
 
-    # JUPITER PRICE
-    async def _get_jupiter_price(self, addr):
-        try:
-            async with self.session.get(
-                "https://quote-api.jup.ag/v6/quote",
-                params={"inputMint": addr, "outputMint": self.SOL_MINT,
-                        "amount": "1000000000", "slippageBps": 100},
-                timeout=aiohttp.ClientTimeout(total=10)) as r:
-                if r.status == 200:
-                    data = await r.json()
-                    out = int(data.get("outAmount", 0))
-                    if out > 0:
-                        return out / 1e9
-            return 0
-        except:
-            return 0
-
-    # SOL PRICE CACHE
     async def _get_sol_price(self):
         now = current_timestamp()
         if self.sol_price_cache > 0 and now - self.sol_price_time < 60:
@@ -615,19 +500,3 @@ class TokenScanner:
             return 150.0
         except:
             return 150.0
-
-    # BIRDEYE HELPER
-    def _birdeye_to_data(self, t):
-        try:
-            return {
-                "address": t.get("address", ""), "name": t.get("name", "Unknown"),
-                "symbol": t.get("symbol", "???"), "decimals": t.get("decimals", 9),
-                "price_usd": t.get("price", 0), "market_cap": t.get("mc", 0),
-                "volume_24h": t.get("v24hUSD", 0), "liquidity": t.get("liquidity", 0),
-                "holder_count": t.get("holder", 0), "created_at": t.get("lastTradeUnixTime", 0),
-                "buys_1h": 0, "sells_1h": 0,
-                "price_change_5m": 0, "price_change_1h": 0, "price_change_24h": 0,
-                "website": "", "twitter": "", "telegram": "",
-            }
-        except:
-            return None
