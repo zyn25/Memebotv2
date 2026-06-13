@@ -362,16 +362,18 @@ class MemeSniperBot:
 
                 # Check balance
                 try:
-                    balance = await self.executor.get_sol_balance()
-                    if balance < 0.05 and self.telegram:
-                        await self.telegram._send(
-                            "\u26a0\ufe0f <b>LOW BALANCE WARNING</b>\n\n"
-                            + "Balance: <b>" + str(round(balance, 4)) + " SOL</b>\n"
-                            + "Minimum: 0.05 SOL\n\n"
-                            + "Bot mungkin tidak bisa trade!"
-                        )
+                    if not config.dry_run:
+                        balance = await self.executor.get_sol_balance()
+                        if balance < 0.05 and self.telegram:
+                            await self.telegram._send(
+                                "\u26a0\ufe0f <b>LOW BALANCE WARNING</b>\n\n"
+                                + "Balance: <b>" + str(round(balance, 4)) + " SOL</b>\n"
+                                + "Minimum: 0.05 SOL\n\n"
+                                + "Bot mungkin tidak bisa trade!"
+                            )
                 except:
                     pass
+
 
                 # Check consecutive losses
                 rm = self.risk_manager
