@@ -37,4 +37,6 @@ def log_rug(addr, score, reasons):
 
 def log_safe(addr, score):
     console.print(f"[safe]SAFE[/] [{addr[:8]}...] Score: {score}/100")
+def log_scan(addr, detail=""):
+    logger.info("[SCAN] " + addr[:12] + "... | " + detail)
     
