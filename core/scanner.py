@@ -12,7 +12,13 @@ import aiohttp
 import websockets
 from typing import Callable, Optional, List
 from config import config
-from utils.logger import logger, log_scan
+from utils.logger import logger
+try:
+    from utils.logger import log_scan
+except ImportError:
+    def log_scan(addr, detail=""):
+        logger.info("[SCAN] " + addr[:12] + "... | " + detail)
+
 from utils.helpers import is_valid_solana_address, current_timestamp
 
 
