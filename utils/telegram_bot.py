@@ -222,7 +222,7 @@ class TelegramBot:
             await msg.answer("\U0001f3af <b>Auto Sniper Bot</b>\n\nBot aktif!\nKetik /help", parse_mode="HTML", reply_markup=self._main_kb())
 
         @r.message(Command("help"))
-        async def h_help(msg: Message):
+            async def h_help(msg: Message):
             if not self._auth(msg):
                 return
             await msg.answer(
