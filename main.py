@@ -1,6 +1,6 @@
 """
 Meme Coin Sniper Bot - Main Entry Point
-Railway-optimized + Telegram + Whale + PriceFeed + Multi TP + DCA + Pre-Buy Checks + Auto Withdraw + Safety
+Railway-optimized + Telegram + Whale + PriceFeed + Multi TP + DCA + Pre-Buy Checks + Auto Withdraw + Safety + Journal
 """
 import asyncio
 import signal
@@ -23,6 +23,7 @@ from dashboard.dashboard import Dashboard
 from utils.logger import logger, console
 from utils.telegram_notifier import notifier
 from utils.helpers import current_timestamp
+from utils.trading_journal import journal
 
 try:
     from utils.telegram_bot import TelegramBot
@@ -251,6 +252,21 @@ class MemeSniperBot:
 
         logger.info("Bot initialized")
 
+    async def show_journal(self, msg):
+        txt = journal.format_journal(10)
+        if self.telegram:
+            await self.telegram._send(txt)
+
+    async def show_daily(self, msg):
+        txt = journal.format_daily()
+        if self.telegram:
+            await self.telegram._send(txt)
+
+    async def show_weekly(self, msg):
+        txt = journal.format_weekly()
+        if self.telegram:
+            await self.telegram._send(txt)
+
     async def start(self):
         self.running = True
         logger.info("Starting bot...")
@@ -303,6 +319,7 @@ class MemeSniperBot:
         except:
             pass
         logger.info("Bot stopped")
+
     async def _save_loop(self):
         while self.running:
             try:
@@ -341,7 +358,6 @@ class MemeSniperBot:
                 pass
 
     async def _withdraw_loop(self):
-        """Auto withdraw profit check setiap jam"""
         while self.running:
             try:
                 await asyncio.sleep(3600)
@@ -353,14 +369,12 @@ class MemeSniperBot:
                 pass
 
     async def _safety_loop(self):
-        """Safety check setiap 5 menit"""
         while self.running:
             try:
                 await asyncio.sleep(300)
                 if not self.running:
                     break
 
-                # Check balance
                 try:
                     if not config.dry_run:
                         balance = await self.executor.get_sol_balance()
@@ -374,8 +388,6 @@ class MemeSniperBot:
                 except:
                     pass
 
-
-                # Check consecutive losses
                 rm = self.risk_manager
                 if rm.consecutive_losses >= 2 and self.telegram:
                     try:
@@ -387,7 +399,6 @@ class MemeSniperBot:
                     except:
                         pass
 
-                # Check daily loss approaching limit
                 if rm.daily_pnl < -0.3 and self.telegram:
                     try:
                         await self.telegram._send(
@@ -421,11 +432,9 @@ class MemeSniperBot:
         addr = token_data.get("address", "")
         self.stats["tokens_scanned"] += 1
 
-        # STEP 1: BLACKLIST
         if addr in self.token_blacklist:
             return
 
-        # STEP 2: SCREENING
         screened = await self.screener.screen_token(token_data)
         if not screened:
             self.stats["tokens_failed_screening"] += 1
@@ -433,14 +442,12 @@ class MemeSniperBot:
         rug = screened.rugpull_report
         self.stats["tokens_passed_screening"] += 1
 
-        # STEP 3: RISK CHECK
         can, reason = self.risk_manager.can_open_position()
         if not can:
             self.dashboard.emit_scanned_token(token_data, "risk_blocked")
             self.dashboard.emit_alert("alert", "RISK BLOCKED: " + sym, reason)
             return
 
-        # STEP 3.5: PRE-BUY VOLUME CHECK
         vol_1h = token_data.get("volume_1h", 0) or 0
         vol_5m = token_data.get("volume_5m", 0) or 0
         if vol_1h > 0 and vol_5m >= 0:
@@ -456,7 +463,6 @@ class MemeSniperBot:
             except Exception:
                 pass
 
-        # STEP 3.6: PRE-BUY BUY/SELL RATIO CHECK
         buys_1h = token_data.get("buys_1h", 0) or 0
         sells_1h = token_data.get("sells_1h", 0) or 0
         if sells_1h > 0 and buys_1h > 0:
@@ -470,11 +476,9 @@ class MemeSniperBot:
             except Exception:
                 pass
 
-        # STEP 4: SIZE
         size = self.risk_manager.calculate_position_size(screened.screener_score, rug.score)
         logger.info("[SIZE] " + sym + " = " + str(round(size, 4)) + " SOL")
 
-        # STEP 5: BUY
         logger.info("[BUY] " + sym + " | Rug: " + str(rug.score) + "/100 | Size: " + str(round(size, 4)) + " SOL")
         self.dashboard.emit_scanned_token(token_data, "buying")
         self.dashboard.emit_alert("buy", "BUYING: " + sym, "Size: " + str(round(size, 4)) + " SOL | Rug: " + str(rug.score) + "/100")
@@ -488,14 +492,12 @@ class MemeSniperBot:
             self.dashboard.emit_alert("alert", "BUY FAILED: " + sym, "Could not execute")
             return
 
-        # STEP 6: CHECK TOKENS RECEIVED
         if buy.get("tokens_received", 0) <= 0 and not buy.get("dry_run"):
             logger.error("[FAIL] 0 tokens received: " + sym)
             self.stats["errors"] += 1
             self.dashboard.emit_alert("alert", "BUY FAILED: " + sym, "0 tokens received")
             return
 
-        # STEP 7: OPEN POSITION
         tokens = buy.get("tokens_received", 0)
         price = buy.get("price", 0)
         pos = self.risk_manager.open_position(
@@ -524,7 +526,6 @@ class MemeSniperBot:
             + "Rug Score: " + str(rug.score) + "/100"
         )
 
-        # Telegram notification untuk BUY
         if self.telegram:
             try:
                 await self.telegram._send(
@@ -537,6 +538,19 @@ class MemeSniperBot:
                 )
             except:
                 pass
+
+        # Record BUY ke journal
+        try:
+            journal.add_buy(
+                token=addr,
+                symbol=sym,
+                amount_sol=size,
+                price=price,
+                tokens=tokens,
+                rug_score=rug.score,
+            )
+        except Exception as e:
+            logger.debug("Journal BUY error: " + str(e)[:50])
 
 
 async def run_bot():
