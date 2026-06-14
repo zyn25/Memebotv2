@@ -212,7 +212,7 @@ class TelegramBot:
 
     def _register_handlers(self):
         r = self.router
-        register_config_commands(r, self._auth, self._settings_kb)
+        
 
         @r.message(Command("start"))
             async def h_start(msg: Message):
@@ -567,7 +567,7 @@ class TelegramBot:
             except ValueError:
                 await msg.answer("Invalid")
 
-                @r.message(Command("setconcurrent"))
+        @r.message(Command("setconcurrent"))
         async def h_setconcurrent(msg: Message):
             if not self._auth(msg): return
             parts = msg.text.split()
@@ -633,8 +633,6 @@ class TelegramBot:
                 await msg.answer("Min Holders: " + parts[1])
             except ValueError:
                 await msg.answer("Invalid")
-
-        @r.message(Command("portfolio"))
 
 
         @r.message(Command("portfolio"))
