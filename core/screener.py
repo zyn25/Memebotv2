@@ -1,10 +1,9 @@
 """
-Token Screener (ULTIMATE)
-- Super lenient basic filter
-- Extra scam filters (7 new)
-- Rugcheck with safety level
-- Advanced anti-rug check
-- Momentum scoring
+Token Screener (BALANCED v2)
+- Fix: Filter 3,4,5 direction dibenerin (pass momentum tinggi, bukan block)
+- Sedikit lebih longgar
+- Masih filter scam dengan baik
+- Lebih banyak token lolos
 """
 import asyncio
 from typing import Optional, List
@@ -58,7 +57,6 @@ class TokenScreener:
         mcap = td.get("market_cap", 0)
         price = td.get("price_usd", 0)
 
-        # Block zero data
         if liq == 0 and holders == 0 and price == 0:
             logger.info("Skip " + sym + ": zero data")
             return None
@@ -68,53 +66,59 @@ class TokenScreener:
         # ============================================
 
         # Filter 1: Liquidity terlalu kecil
-        if liq > 0 and liq < 1000:
+        if liq > 0 and liq < 200:
             logger.info("Skip " + sym + ": Liquidity too low ($" + str(round(liq)) + ")")
             return None
 
         # Filter 2: Market cap terlalu kecil
-        if mcap > 0 and mcap < 5000:
+        if mcap > 0 and mcap < 500:
             logger.info("Skip " + sym + ": MCap too low ($" + str(round(mcap)) + ")")
             return None
 
-        # Filter 3: Volume spike (manipulasi)
+        # Filter 3: Volume spike manipulation check
+        # FIX: Block kalau spike GILA (> 50x = pasti manipulation)
+        # 10-50x = NORMAL buat meme coin pump, JANGAN BLOCK
         vol_5m = td.get("volume_5m", 0)
         vol_1h = td.get("volume_1h", 0)
         if vol_1h > 0 and vol_5m > 0:
             vol_ratio = vol_5m / (vol_1h / 12)
-            if vol_ratio > 10:
-                logger.info("Skip " + sym + ": Volume spike (" + str(round(vol_ratio, 1)) + "x) - manipulation")
+            if vol_ratio > 50:
+                logger.info("Skip " + sym + ": Volume spike MANIPULATION (" + str(round(vol_ratio, 1)) + "x)")
                 return None
 
-        # Filter 4: Buy/sell ratio extreme (pump)
+        # Filter 4: Buy/sell ratio extreme pump check
+        # FIX: Block kalau ratio GILA (> 50x = pasti bot buy)
+        # 10-50x = NORMAL buat hype coin, JANGAN BLOCK
         buys = td.get("buys_1h", 0)
         sells = td.get("sells_1h", 0)
         if sells > 0 and buys > 0:
             ratio = buys / sells
-            if ratio > 10:
-                logger.info("Skip " + sym + ": Extreme buy ratio (" + str(round(ratio, 1)) + "x) - pump")
+            if ratio > 50:
+                logger.info("Skip " + sym + ": Extreme buy ratio BOT (" + str(round(ratio, 1)) + "x)")
                 return None
 
-        # Filter 5: Price change extreme (pump & dump)
+        # Filter 5: Price change extreme pump & dump check
+        # FIX: Block kalau GILA banget (> 3000% = pasti manipulation)
+        # 500-3000% = NORMAL buat meme coin pump awal
         pc5m = td.get("price_change_5m", 0)
         pc1h = td.get("price_change_1h", 0)
-        if pc5m and abs(pc5m) > 1000:
-            logger.info("Skip " + sym + ": Extreme 5m change (" + str(round(pc5m, 1)) + "%) - P&D")
+        if pc5m and abs(pc5m) > 3000:
+            logger.info("Skip " + sym + ": Extreme 5m change (" + str(round(pc5m, 1)) + "%) - manipulation")
             return None
-        if pc1h and pc1h < -90:
-            logger.info("Skip " + sym + ": Dumped -90% in 1h")
+        if pc1h and pc1h < -95:
+            logger.info("Skip " + sym + ": Dumped -95% in 1h")
             return None
 
         # Filter 6: Liquidity/MCap ratio terlalu rendah
         if mcap > 0 and liq > 0:
             lm_ratio = liq / mcap
-            if lm_ratio < 0.01:
+            if lm_ratio < 0.005:
                 logger.info("Skip " + sym + ": Liq/MCap too low (" + str(round(lm_ratio * 100, 2)) + "%)")
                 return None
 
         # Filter 7: No social + low holders
         has_social = td.get("website") or td.get("twitter") or td.get("telegram")
-        if not has_social and holders < 50:
+        if not has_social and holders < 30:
             logger.info("Skip " + sym + ": No social + low holders")
             return None
 
