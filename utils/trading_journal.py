@@ -129,10 +129,10 @@ class TradingJournal:
     def format_journal(self, count: int = 10) -> str:
         recent = self.get_recent(count)
         if not recent:
-            return "📜 Journal kosong\n\nBelum ada trade tercatat."
+            return "\U0001f4dc Journal kosong\n\nBelum ada trade tercatat."
 
         lines = []
-        lines.append("📜 <b>TRADING JOURNAL</b>")
+        lines.append("\U0001f4dc <b>TRADING JOURNAL</b>")
         lines.append("=" * 28)
         lines.append("")
 
@@ -140,12 +140,12 @@ class TradingJournal:
             ts = datetime.fromtimestamp(e.timestamp).strftime("%m/%d %H:%M")
             if e.side == "BUY":
                 lines.append(
-                    "🟢 " + ts + " | BUY " + e.symbol + "\n"
+                    "\U0001f7e2 " + ts + " | BUY " + e.symbol + "\n"
                     + "   " + str(round(e.amount_sol, 4)) + " SOL @ $" + str(e.price) + "\n"
                     + "   Rug: " + str(e.rug_score) + "/100"
                 )
             else:
-                emoji = "🟢" if e.pnl_sol >= 0 else "🔴"
+                emoji = "\U0001f7e2" if e.pnl_sol >= 0 else "\U0001f534"
                 pnl_str = "+" + str(round(e.pnl_sol, 4)) if e.pnl_sol >= 0 else str(round(e.pnl_sol, 4))
                 pct_str = "+" + str(round(e.pnl_pct, 1)) if e.pnl_pct >= 0 else str(round(e.pnl_pct, 1))
                 lines.append(
@@ -161,11 +161,11 @@ class TradingJournal:
         total_pnl = self.get_total_pnl()
         wr = self.get_win_rate()
 
-        lines.append("📊 <b>SUMMARY</b>")
+        lines.append("\U0001f4ca <b>SUMMARY</b>")
         lines.append("Total Trades: " + str(len(sells)))
         lines.append("Wins: " + str(wins) + " | Losses: " + str(losses))
         lines.append("Win Rate: " + str(round(wr, 1)) + "%")
-        pnl_emoji = "🟢" if total_pnl >= 0 else "🔴"
+        pnl_emoji = "\U0001f7e2" if total_pnl >= 0 else "\U0001f534"
         pnl_sign = "+" if total_pnl >= 0 else ""
         lines.append("Total PnL: " + pnl_emoji + " " + pnl_sign + str(round(total_pnl, 4)) + " SOL")
 
@@ -174,7 +174,7 @@ class TradingJournal:
     def format_daily(self) -> str:
         today = self.get_today()
         if not today:
-            return "📅 <b>DAILY REPORT</b>\n\nBelum ada trade hari ini."
+            return "\U0001f4c5 <b>DAILY REPORT</b>\n\nBelum ada trade hari ini."
 
         sells = [e for e in today if e.side == "SELL"]
         wins = len([e for e in sells if e.pnl_sol > 0])
@@ -182,11 +182,11 @@ class TradingJournal:
         total_pnl = sum(e.pnl_sol for e in sells)
         wr = (wins / len(sells) * 100) if sells else 0
 
-        pnl_emoji = "🟢" if total_pnl >= 0 else "🔴"
+        pnl_emoji = "\U0001f7e2" if total_pnl >= 0 else "\U0001f534"
         pnl_sign = "+" if total_pnl >= 0 else ""
 
         return (
-            "📅 <b>DAILY REPORT</b>\n"
+            "\U0001f4c5 <b>DAILY REPORT</b>\n"
             + "=" * 28 + "\n\n"
             + "Trades: " + str(len(sells)) + "\n"
             + "Wins: " + str(wins) + " | Losses: " + str(losses) + "\n"
@@ -200,7 +200,7 @@ class TradingJournal:
         sells = [e for e in week_entries if e.side == "SELL"]
 
         if not sells:
-            return "📅 <b>WEEKLY REPORT</b>\n\nBelum ada trade minggu ini."
+            return "\U0001f4c5 <b>WEEKLY REPORT</b>\n\nBelum ada trade minggu ini."
 
         wins = len([e for e in sells if e.pnl_sol > 0])
         losses = len([e for e in sells if e.pnl_sol < 0])
@@ -209,20 +209,35 @@ class TradingJournal:
         best = max(sells, key=lambda e: e.pnl_sol)
         worst = min(sells, key=lambda e: e.pnl_sol)
 
-        pnl_emoji = "🟢" if total_pnl >= 0 else "🔴"
+        pnl_emoji = "\U0001f7e2" if total_pnl >= 0 else "\U0001f534"
         pnl_sign = "+" if total_pnl >= 0 else ""
 
         return (
-            "📅 <b>WEEKLY REPORT</b>\n"
+            "\U0001f4c5 <b>WEEKLY REPORT</b>\n"
             + "=" * 28 + "\n\n"
             + "Trades: " + str(len(sells)) + "\n"
             + "Wins: " + str(wins) + " | Losses: " + str(losses) + "\n"
             + "Win Rate: " + str(round(wr, 1)) + "%\n"
             + "PnL: " + pnl_emoji + " " + pnl_sign + str(round(total_pnl, 4)) + " SOL\n\n"
-            + "🏆 Best: " + best.symbol + " (+" + str(round(best.pnl_sol, 4)) + " SOL)\n"
-            + "💔 Worst: " + worst.symbol + " (" + str(round(worst.pnl_sol, 4)) + " SOL)"
+            + "\U0001f3c6 Best: " + best.symbol + " (+" + str(round(best.pnl_sol, 4)) + " SOL)\n"
+            + "\U0001f494 Worst: " + worst.symbol + " (" + str(round(worst.pnl_sol, 4)) + " SOL)"
         )
 
 
 # Singleton instance
 journal = TradingJournal()
+
+
+# ============================================
+# COMPATIBILITY FUNCTIONS
+# Dipanggil dari file lain yang import nama ini
+# ============================================
+
+def get_journal_summary():
+    return journal.format_journal(10)
+
+def get_daily_summary():
+    return journal.format_daily()
+
+def get_weekly_summary():
+    return journal.format_weekly()
