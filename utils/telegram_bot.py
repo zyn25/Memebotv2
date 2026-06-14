@@ -10,6 +10,8 @@ from aiogram.types import (
 from aiogram.enums import ParseMode
 from config import config
 from utils.logger import logger
+from utils.config_commands import register_config_commands
+
 
 
 class TelegramBot:
@@ -211,9 +213,10 @@ class TelegramBot:
 
     def _register_handlers(self):
         r = self.router
+        register_config_commands(r, self._auth, self._settings_kb)
 
         @r.message(Command("start"))
-        async def h_start(msg: Message):
+            async def h_start(msg: Message):
             if not self._auth(msg):
                 return
             await msg.answer("\U0001f3af <b>Auto Sniper Bot</b>\n\nBot aktif!\nKetik /help", parse_mode="HTML", reply_markup=self._main_kb())
