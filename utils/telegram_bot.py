@@ -10,7 +10,6 @@ from aiogram.types import (
 from aiogram.enums import ParseMode
 from config import config
 from utils.logger import logger
-from utils.config_commands import register_config_commands
 
 
 
