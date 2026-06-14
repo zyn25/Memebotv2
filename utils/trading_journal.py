@@ -41,9 +41,17 @@ class TradingJournal:
         try:
             if os.path.exists(JOURNAL_FILE):
                 with open(JOURNAL_FILE, "r") as f:
-                    data = json.load(f)
+                    content = f.read().strip()
+                if not content:
+                    logger.info("Journal file empty, starting fresh")
+                    return
+                data = json.loads(content)
+                if not isinstance(data, list):
+                    logger.warning("Journal data not a list, resetting")
+                    return
                 for d in data:
-                    self.entries.append(TradeEntry(**d))
+                    if isinstance(d, dict):
+                        self.entries.append(TradeEntry(**d))
                 logger.info("Journal loaded: " + str(len(self.entries)) + " entries")
             else:
                 os.makedirs(os.path.dirname(JOURNAL_FILE), exist_ok=True)
