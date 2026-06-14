@@ -1,12 +1,13 @@
 """
 utils/trading_journal.py
-Trading Journal - Records all trades for analysis
+Trading Journal - v2.0 BULLETPROOF
+Handles corrupted files, empty files, wrong format, everything.
 """
 import json
 import os
 import time
-from typing import List, Dict, Optional
-from dataclasses import dataclass, field, asdict
+from typing import List
+from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from utils.logger import logger
 
@@ -39,207 +40,272 @@ class TradingJournal:
 
     def _load(self):
         try:
-            if os.path.exists(JOURNAL_FILE):
-                with open(JOURNAL_FILE, "r") as f:
-                    content = f.read().strip()
-                if not content:
-                    logger.info("Journal file empty, starting fresh")
-                    return
-                data = json.loads(content)
-                if not isinstance(data, list):
-                    logger.warning("Journal data not a list, resetting")
-                    return
-                for d in data:
+            if not os.path.exists(JOURNAL_FILE):
+                logger.info("Journal: no file, starting fresh")
+                return
+
+            with open(JOURNAL_FILE, "r") as f:
+                content = f.read().strip()
+
+            if not content or content == "" or content == "null":
+                logger.info("Journal: file empty, starting fresh")
+                return
+
+            data = json.loads(content)
+
+            if isinstance(data, str):
+                logger.warning("Journal: file is string, resetting")
+                self.entries = []
+                self._save_clean()
+                return
+
+            if not isinstance(data, list):
+                logger.warning("Journal: file not list, resetting")
+                self.entries = []
+                self._save_clean()
+                return
+
+            count = 0
+            for d in data:
+                try:
                     if isinstance(d, dict):
-                        self.entries.append(TradeEntry(**d))
-                logger.info("Journal loaded: " + str(len(self.entries)) + " entries")
-            else:
-                os.makedirs(os.path.dirname(JOURNAL_FILE), exist_ok=True)
-                logger.info("Journal: new file created")
+                        clean = {}
+                        for k, v in d.items():
+                            if k in TradeEntry.__dataclass_fields__:
+                                clean[k] = v
+                        if "token" in clean and "symbol" in clean:
+                            self.entries.append(TradeEntry(**clean))
+                            count += 1
+                except Exception:
+                    continue
+
+            logger.info("Journal loaded: " + str(count) + " entries")
+
+        except json.JSONDecodeError:
+            logger.warning("Journal: corrupted JSON, resetting")
+            self.entries = []
+            self._save_clean()
         except Exception as e:
             logger.error("Journal load error: " + str(e))
             self.entries = []
 
-    def _save(self):
+    def _save_clean(self):
         try:
             os.makedirs(os.path.dirname(JOURNAL_FILE), exist_ok=True)
             with open(JOURNAL_FILE, "w") as f:
-                json.dump([asdict(e) for e in self.entries], f, indent=2)
+                json.dump([], f)
+        except Exception as e:
+            logger.error("Journal save_clean error: " + str(e))
+
+    def _save(self):
+        try:
+            os.makedirs(os.path.dirname(JOURNAL_FILE), exist_ok=True)
+            data = []
+            for e in self.entries:
+                try:
+                    data.append(asdict(e))
+                except Exception:
+                    continue
+            with open(JOURNAL_FILE, "w") as f:
+                json.dump(data, f)
         except Exception as e:
             logger.error("Journal save error: " + str(e))
 
-    def add_buy(self, token: str, symbol: str, amount_sol: float,
-                price: float, tokens: float, rug_score: int = 0,
-                tx_hash: str = "") -> TradeEntry:
-        entry = TradeEntry(
-            token=token,
-            symbol=symbol,
-            side="BUY",
-            amount_sol=amount_sol,
-            price=price,
-            tokens=tokens,
-            timestamp=time.time(),
-            tx_hash=tx_hash,
-            rug_score=rug_score,
-        )
-        self.entries.append(entry)
-        self._save()
-        logger.info("Journal BUY: " + symbol + " | " + str(amount_sol) + " SOL")
-        return entry
+    def add_buy(self, token="", symbol="", amount_sol=0.0,
+                price=0.0, tokens=0.0, rug_score=0,
+                tx_hash="", **kwargs):
+        try:
+            entry = TradeEntry(
+                token=str(token),
+                symbol=str(symbol),
+                side="BUY",
+                amount_sol=float(amount_sol),
+                price=float(price),
+                tokens=float(tokens),
+                timestamp=time.time(),
+                tx_hash=str(tx_hash),
+                rug_score=int(rug_score),
+            )
+            self.entries.append(entry)
+            self._save()
+            logger.info("Journal BUY: " + str(symbol) + " | " + str(amount_sol) + " SOL")
+            return entry
+        except Exception as e:
+            logger.error("Journal add_buy error: " + str(e))
+            return None
 
-    def add_sell(self, token: str, symbol: str, amount_sol: float,
-                 price: float, tokens: float, pnl_sol: float = 0.0,
-                 pnl_pct: float = 0.0, exit_reason: str = "",
-                 tx_hash: str = "") -> TradeEntry:
-        entry = TradeEntry(
-            token=token,
-            symbol=symbol,
-            side="SELL",
-            amount_sol=amount_sol,
-            price=price,
-            tokens=tokens,
-            timestamp=time.time(),
-            tx_hash=tx_hash,
-            pnl_sol=pnl_sol,
-            pnl_pct=pnl_pct,
-            exit_reason=exit_reason,
-        )
-        self.entries.append(entry)
-        self._save()
-        logger.info("Journal SELL: " + symbol + " | PnL: " + str(round(pnl_sol, 4)) + " SOL")
-        return entry
+    def add_sell(self, token="", symbol="", amount_sol=0.0,
+                 price=0.0, tokens=0.0, pnl_sol=0.0,
+                 pnl_pct=0.0, exit_reason="",
+                 tx_hash="", **kwargs):
+        try:
+            entry = TradeEntry(
+                token=str(token),
+                symbol=str(symbol),
+                side="SELL",
+                amount_sol=float(amount_sol),
+                price=float(price),
+                tokens=float(tokens),
+                timestamp=time.time(),
+                tx_hash=str(tx_hash),
+                pnl_sol=float(pnl_sol),
+                pnl_pct=float(pnl_pct),
+                exit_reason=str(exit_reason),
+            )
+            self.entries.append(entry)
+            self._save()
+            logger.info("Journal SELL: " + str(symbol) + " | PnL: " + str(round(pnl_sol, 4)) + " SOL")
+            return entry
+        except Exception as e:
+            logger.error("Journal add_sell error: " + str(e))
+            return None
 
-    def get_recent(self, count: int = 10) -> List[TradeEntry]:
+    def get_recent(self, count=10):
         return self.entries[-count:]
 
-    def get_today(self) -> List[TradeEntry]:
-        today_start = datetime.now(timezone.utc).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        ).timestamp()
-        return [e for e in self.entries if e.timestamp >= today_start]
+    def get_today(self):
+        try:
+            today_start = datetime.now(timezone.utc).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            ).timestamp()
+            return [e for e in self.entries if e.timestamp >= today_start]
+        except Exception:
+            return []
 
-    def get_wins(self) -> List[TradeEntry]:
+    def get_wins(self):
         return [e for e in self.entries if e.side == "SELL" and e.pnl_sol > 0]
 
-    def get_losses(self) -> List[TradeEntry]:
+    def get_losses(self):
         return [e for e in self.entries if e.side == "SELL" and e.pnl_sol < 0]
 
-    def get_total_pnl(self) -> float:
-        return sum(e.pnl_sol for e in self.entries if e.side == "SELL")
-
-    def get_win_rate(self) -> float:
-        sells = [e for e in self.entries if e.side == "SELL"]
-        if not sells:
+    def get_total_pnl(self):
+        try:
+            return sum(e.pnl_sol for e in self.entries if e.side == "SELL")
+        except Exception:
             return 0.0
-        wins = len([e for e in sells if e.pnl_sol > 0])
-        return (wins / len(sells)) * 100
 
-    def format_journal(self, count: int = 10) -> str:
-        recent = self.get_recent(count)
-        if not recent:
-            return "\U0001f4dc Journal kosong\n\nBelum ada trade tercatat."
+    def get_win_rate(self):
+        try:
+            sells = [e for e in self.entries if e.side == "SELL"]
+            if not sells:
+                return 0.0
+            wins = len([e for e in sells if e.pnl_sol > 0])
+            return (wins / len(sells)) * 100
+        except Exception:
+            return 0.0
 
-        lines = []
-        lines.append("\U0001f4dc <b>TRADING JOURNAL</b>")
-        lines.append("=" * 28)
-        lines.append("")
+    def format_journal(self, count=10):
+        try:
+            recent = self.get_recent(count)
+            if not recent:
+                return "\U0001f4dc <b>TRADING JOURNAL</b>\n\nJournal kosong\n\nBelum ada trade tercatat."
 
-        for e in reversed(recent):
-            ts = datetime.fromtimestamp(e.timestamp).strftime("%m/%d %H:%M")
-            if e.side == "BUY":
-                lines.append(
-                    "\U0001f7e2 " + ts + " | BUY " + e.symbol + "\n"
-                    + "   " + str(round(e.amount_sol, 4)) + " SOL @ $" + str(e.price) + "\n"
-                    + "   Rug: " + str(e.rug_score) + "/100"
-                )
-            else:
-                emoji = "\U0001f7e2" if e.pnl_sol >= 0 else "\U0001f534"
-                pnl_str = "+" + str(round(e.pnl_sol, 4)) if e.pnl_sol >= 0 else str(round(e.pnl_sol, 4))
-                pct_str = "+" + str(round(e.pnl_pct, 1)) if e.pnl_pct >= 0 else str(round(e.pnl_pct, 1))
-                lines.append(
-                    emoji + " " + ts + " | SELL " + e.symbol + "\n"
-                    + "   PnL: " + pnl_str + " SOL (" + pct_str + "%)\n"
-                    + "   Reason: " + (e.exit_reason or "manual")
-                )
+            lines = []
+            lines.append("\U0001f4dc <b>TRADING JOURNAL</b>")
+            lines.append("=" * 28)
             lines.append("")
 
-        sells = [e for e in self.entries if e.side == "SELL"]
-        wins = len([e for e in sells if e.pnl_sol > 0])
-        losses = len([e for e in sells if e.pnl_sol < 0])
-        total_pnl = self.get_total_pnl()
-        wr = self.get_win_rate()
+            for e in reversed(recent):
+                try:
+                    ts = datetime.fromtimestamp(e.timestamp).strftime("%m/%d %H:%M")
+                    if e.side == "BUY":
+                        lines.append(
+                            "\U0001f7e2 " + ts + " | BUY " + str(e.symbol) + "\n"
+                            + "   " + str(round(e.amount_sol, 4)) + " SOL @ $" + str(e.price) + "\n"
+                            + "   Rug: " + str(e.rug_score) + "/100"
+                        )
+                    else:
+                        emoji = "\U0001f7e2" if e.pnl_sol >= 0 else "\U0001f534"
+                        pnl_str = "+" + str(round(e.pnl_sol, 4)) if e.pnl_sol >= 0 else str(round(e.pnl_sol, 4))
+                        pct_str = "+" + str(round(e.pnl_pct, 1)) if e.pnl_pct >= 0 else str(round(e.pnl_pct, 1))
+                        lines.append(
+                            emoji + " " + ts + " | SELL " + str(e.symbol) + "\n"
+                            + "   PnL: " + pnl_str + " SOL (" + pct_str + "%)\n"
+                            + "   Reason: " + str(e.exit_reason or "manual")
+                        )
+                    lines.append("")
+                except Exception:
+                    continue
 
-        lines.append("\U0001f4ca <b>SUMMARY</b>")
-        lines.append("Total Trades: " + str(len(sells)))
-        lines.append("Wins: " + str(wins) + " | Losses: " + str(losses))
-        lines.append("Win Rate: " + str(round(wr, 1)) + "%")
-        pnl_emoji = "\U0001f7e2" if total_pnl >= 0 else "\U0001f534"
-        pnl_sign = "+" if total_pnl >= 0 else ""
-        lines.append("Total PnL: " + pnl_emoji + " " + pnl_sign + str(round(total_pnl, 4)) + " SOL")
+            sells = [e for e in self.entries if e.side == "SELL"]
+            wins = len([e for e in sells if e.pnl_sol > 0])
+            losses = len([e for e in sells if e.pnl_sol < 0])
+            total_pnl = self.get_total_pnl()
+            wr = self.get_win_rate()
 
-        return "\n".join(lines)
+            lines.append("\U0001f4ca <b>SUMMARY</b>")
+            lines.append("Total Trades: " + str(len(sells)))
+            lines.append("Wins: " + str(wins) + " | Losses: " + str(losses))
+            lines.append("Win Rate: " + str(round(wr, 1)) + "%")
+            pnl_emoji = "\U0001f7e2" if total_pnl >= 0 else "\U0001f534"
+            pnl_sign = "+" if total_pnl >= 0 else ""
+            lines.append("Total PnL: " + pnl_emoji + " " + pnl_sign + str(round(total_pnl, 4)) + " SOL")
 
-    def format_daily(self) -> str:
-        today = self.get_today()
-        if not today:
-            return "\U0001f4c5 <b>DAILY REPORT</b>\n\nBelum ada trade hari ini."
+            return "\n".join(lines)
+        except Exception as e:
+            return "\U0001f4dc Journal error: " + str(e)
 
-        sells = [e for e in today if e.side == "SELL"]
-        wins = len([e for e in sells if e.pnl_sol > 0])
-        losses = len([e for e in sells if e.pnl_sol < 0])
-        total_pnl = sum(e.pnl_sol for e in sells)
-        wr = (wins / len(sells) * 100) if sells else 0
+    def format_daily(self):
+        try:
+            today = self.get_today()
+            if not today:
+                return "\U0001f4c5 <b>DAILY REPORT</b>\n\nBelum ada trade hari ini."
 
-        pnl_emoji = "\U0001f7e2" if total_pnl >= 0 else "\U0001f534"
-        pnl_sign = "+" if total_pnl >= 0 else ""
+            sells = [e for e in today if e.side == "SELL"]
+            wins = len([e for e in sells if e.pnl_sol > 0])
+            losses = len([e for e in sells if e.pnl_sol < 0])
+            total_pnl = sum(e.pnl_sol for e in sells)
+            wr = (wins / len(sells) * 100) if sells else 0
 
-        return (
-            "\U0001f4c5 <b>DAILY REPORT</b>\n"
-            + "=" * 28 + "\n\n"
-            + "Trades: " + str(len(sells)) + "\n"
-            + "Wins: " + str(wins) + " | Losses: " + str(losses) + "\n"
-            + "Win Rate: " + str(round(wr, 1)) + "%\n"
-            + "PnL: " + pnl_emoji + " " + pnl_sign + str(round(total_pnl, 4)) + " SOL"
-        )
+            pnl_emoji = "\U0001f7e2" if total_pnl >= 0 else "\U0001f534"
+            pnl_sign = "+" if total_pnl >= 0 else ""
 
-    def format_weekly(self) -> str:
-        week_ago = time.time() - (7 * 24 * 3600)
-        week_entries = [e for e in self.entries if e.timestamp >= week_ago]
-        sells = [e for e in week_entries if e.side == "SELL"]
+            return (
+                "\U0001f4c5 <b>DAILY REPORT</b>\n"
+                + "=" * 28 + "\n\n"
+                + "Trades: " + str(len(sells)) + "\n"
+                + "Wins: " + str(wins) + " | Losses: " + str(losses) + "\n"
+                + "Win Rate: " + str(round(wr, 1)) + "%\n"
+                + "PnL: " + pnl_emoji + " " + pnl_sign + str(round(total_pnl, 4)) + " SOL"
+            )
+        except Exception as e:
+            return "Daily report error: " + str(e)
 
-        if not sells:
-            return "\U0001f4c5 <b>WEEKLY REPORT</b>\n\nBelum ada trade minggu ini."
+    def format_weekly(self):
+        try:
+            week_ago = time.time() - (7 * 24 * 3600)
+            week_entries = [e for e in self.entries if e.timestamp >= week_ago]
+            sells = [e for e in week_entries if e.side == "SELL"]
 
-        wins = len([e for e in sells if e.pnl_sol > 0])
-        losses = len([e for e in sells if e.pnl_sol < 0])
-        total_pnl = sum(e.pnl_sol for e in sells)
-        wr = (wins / len(sells) * 100) if sells else 0
-        best = max(sells, key=lambda e: e.pnl_sol)
-        worst = min(sells, key=lambda e: e.pnl_sol)
+            if not sells:
+                return "\U0001f4c5 <b>WEEKLY REPORT</b>\n\nBelum ada trade minggu ini."
 
-        pnl_emoji = "\U0001f7e2" if total_pnl >= 0 else "\U0001f534"
-        pnl_sign = "+" if total_pnl >= 0 else ""
+            wins = len([e for e in sells if e.pnl_sol > 0])
+            losses = len([e for e in sells if e.pnl_sol < 0])
+            total_pnl = sum(e.pnl_sol for e in sells)
+            wr = (wins / len(sells) * 100) if sells else 0
+            best = max(sells, key=lambda e: e.pnl_sol)
+            worst = min(sells, key=lambda e: e.pnl_sol)
 
-        return (
-            "\U0001f4c5 <b>WEEKLY REPORT</b>\n"
-            + "=" * 28 + "\n\n"
-            + "Trades: " + str(len(sells)) + "\n"
-            + "Wins: " + str(wins) + " | Losses: " + str(losses) + "\n"
-            + "Win Rate: " + str(round(wr, 1)) + "%\n"
-            + "PnL: " + pnl_emoji + " " + pnl_sign + str(round(total_pnl, 4)) + " SOL\n\n"
-            + "\U0001f3c6 Best: " + best.symbol + " (+" + str(round(best.pnl_sol, 4)) + " SOL)\n"
-            + "\U0001f494 Worst: " + worst.symbol + " (" + str(round(worst.pnl_sol, 4)) + " SOL)"
-        )
+            pnl_emoji = "\U0001f7e2" if total_pnl >= 0 else "\U0001f534"
+            pnl_sign = "+" if total_pnl >= 0 else ""
+
+            return (
+                "\U0001f4c5 <b>WEEKLY REPORT</b>\n"
+                + "=" * 28 + "\n\n"
+                + "Trades: " + str(len(sells)) + "\n"
+                + "Wins: " + str(wins) + " | Losses: " + str(losses) + "\n"
+                + "Win Rate: " + str(round(wr, 1)) + "%\n"
+                + "PnL: " + pnl_emoji + " " + pnl_sign + str(round(total_pnl, 4)) + " SOL\n\n"
+                + "\U0001f3c6 Best: " + str(best.symbol) + " (+" + str(round(best.pnl_sol, 4)) + " SOL)\n"
+                + "\U0001f494 Worst: " + str(worst.symbol) + " (" + str(round(worst.pnl_sol, 4)) + " SOL)"
+            )
+        except Exception as e:
+            return "Weekly report error: " + str(e)
 
 
-# Singleton instance
 journal = TradingJournal()
 
-
-# ============================================
-# COMPATIBILITY FUNCTIONS
-# Dipanggil dari file lain yang import nama ini
-# ============================================
 
 def get_journal_summary():
     return journal.format_journal(10)
