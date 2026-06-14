@@ -1,5 +1,12 @@
 """
-Token Scanner - Multi-source detection (ULTIMATE)
+Token Scanner - Multi-source detection (ULTIMATE v2.0)
+=====================================================
+Fix v2.0:
+  - Anti-FOMO blocker REMOVED (screener sudah handle)
+  - Session auto-refresh setiap 10 menit
+  - Each loop truly bulletproof (nested try/except)
+  - Watchdog auto-restart stuck loops
+  - seen_tokens cap lebih kecil (10000)
 """
 import asyncio
 import json
@@ -47,23 +54,51 @@ class TokenScanner:
         self.SOL_MINT = "So11111111111111111111111111111111111111112"
         self.sol_price_cache = 0
         self.sol_price_time = 0
+        self.last_session_refresh = 0
+        self.scan_count = 0
+        self.last_scan_count = 0
+        self.stuck_counter = 0
+
+    async def _refresh_session(self):
+        try:
+            now = current_timestamp()
+            if now - self.last_session_refresh > 600:
+                if self.session:
+                    try:
+                        await self.session.close()
+                    except:
+                        pass
+                self.session = aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=15)
+                )
+                self.last_session_refresh = now
+                logger.info("Scanner session refreshed")
+        except Exception as e:
+            logger.error("Session refresh error: " + str(e))
 
     async def start(self):
         self.running = True
-        self.session = aiohttp.ClientSession()
-        logger.info("Scanner started (ULTIMATE)")
+        self.session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=15)
+        )
+        self.last_session_refresh = current_timestamp()
+        logger.info("Scanner started (ULTIMATE v2.0)")
         await asyncio.gather(
             self._scan_raydium_ws(),
             self._poll_dexscreener(),
             self._poll_jupiter(),
             self._poll_pumpfun(),
+            self._watchdog(),
             return_exceptions=True,
         )
 
     async def stop(self):
         self.running = False
         if self.session:
-            await self.session.close()
+            try:
+                await self.session.close()
+            except:
+                pass
 
     def on_new_token(self, cb: Callable):
         self.callbacks.append(cb)
@@ -100,15 +135,6 @@ class TokenScanner:
         if addr in known_scam:
             self.blocked_tokens.add(addr)
             return True
-        pc5m = td.get("price_change_5m", 0)
-        if pc5m and pc5m > 200:
-            self.blocked_tokens.add(addr)
-            logger.warning("BLOCKED FOMO: " + symbol + " | +" + str(pc5m) + "% in 5m")
-            return True
-        pc1h = td.get("price_change_1h", 0)
-        if pc1h and pc1h > 500:
-            self.blocked_tokens.add(addr)
-            return True
         return False
 
     def _check_volume_drop(self, td):
@@ -122,6 +148,50 @@ class TokenScanner:
                     return True
         return False
 
+    async def _watchdog(self):
+        while self.running:
+            try:
+                await asyncio.sleep(300)
+                if not self.running:
+                    break
+                if self.scan_count == self.last_scan_count:
+                    self.stuck_counter += 1
+                    if self.stuck_counter >= 2:
+                        logger.warning("WATCHDOG: Scanner stuck! Refreshing session...")
+                        await self._refresh_session()
+                        self.stuck_counter = 0
+                else:
+                    self.stuck_counter = 0
+                self.last_scan_count = self.scan_count
+                if len(self.seen_tokens) > 10000:
+                    self.seen_tokens.clear()
+                    logger.info("Seen tokens cleared (was > 10000)")
+            except Exception as e:
+                logger.error("Watchdog error: " + str(e))
+                await asyncio.sleep(60)
+
+    async def _process_token(self, addr, source, extra=None):
+        try:
+            if addr in self.seen_tokens or addr in self.blocked_tokens:
+                return
+            if not is_valid_solana_address(addr):
+                return
+            self.seen_tokens.add(addr)
+            td = await self._fetch_meta(addr)
+            if not td:
+                return
+            if self._check_impersonator(td):
+                return
+            td["source"] = source
+            td["discovered_at"] = current_timestamp()
+            if extra:
+                td.update(extra)
+            self.scan_count += 1
+            log_scan(addr, source + ": " + td.get("symbol", "???"))
+            await self._notify(td)
+        except Exception as e:
+            logger.error("Process token error: " + str(e)[:80])
+
     async def _scan_raydium_ws(self):
         fail_count = 0
         while self.running:
@@ -130,7 +200,9 @@ class TokenScanner:
                 if not uri or "mainnet-beta.solana.com" in uri:
                     await asyncio.sleep(60)
                     continue
-                async with websockets.connect(uri, ping_interval=20, ping_timeout=10, close_timeout=5) as ws:
+                async with websockets.connect(
+                    uri, ping_interval=20, ping_timeout=10, close_timeout=5
+                ) as ws:
                     fail_count = 0
                     await ws.send(json.dumps({
                         "jsonrpc": "2.0", "id": 1, "method": "logsSubscribe",
@@ -145,6 +217,8 @@ class TokenScanner:
                             await self._process_raydium(data)
                         except json.JSONDecodeError:
                             continue
+                        except Exception as e:
+                            logger.error("Raydium msg error: " + str(e)[:50])
             except websockets.exceptions.ConnectionClosed:
                 fail_count += 1
                 await asyncio.sleep(min(30 * fail_count, 300))
@@ -164,20 +238,7 @@ class TokenScanner:
                 return
             tokens = self._extract_tokens(logs)
             for t in tokens:
-                if t in self.seen_tokens or t in self.blocked_tokens:
-                    continue
-                if not is_valid_solana_address(t):
-                    continue
-                self.seen_tokens.add(t)
-                td = await self._fetch_meta(t)
-                if td:
-                    if self._check_impersonator(td):
-                        continue
-                    td["source"] = "raydium"
-                    td["signature"] = sig
-                    td["discovered_at"] = current_timestamp()
-                    log_scan(t, "New pool: " + td.get("symbol", "???"))
-                    await self._notify(td)
+                await self._process_token(t, "raydium", {"signature": sig})
         except Exception as e:
             logger.error("Process Raydium error: " + str(e))
 
@@ -197,60 +258,65 @@ class TokenScanner:
     async def _poll_dexscreener(self):
         while self.running:
             try:
-                async with self.session.get(
-                    "https://api.dexscreener.com/token-profiles/latest/v1",
-                    timeout=aiohttp.ClientTimeout(total=15)) as r:
-                    if r.status == 200:
-                        data = await r.json()
-                        for item in data:
-                            chain = item.get("chainId", "")
-                            addr = item.get("tokenAddress", "")
-                            if chain != "solana":
-                                continue
-                            if addr in self.seen_tokens or addr in self.blocked_tokens:
-                                continue
-                            if not is_valid_solana_address(addr):
-                                continue
-                            self.seen_tokens.add(addr)
-                            td = await self._fetch_meta(addr)
-                            if td:
-                                if self._check_impersonator(td):
-                                    continue
-                                td["source"] = "dexscreener"
-                                td["discovered_at"] = current_timestamp()
-                                log_scan(addr, "DexScreener: " + td.get("symbol", "???"))
-                                await self._notify(td)
+                await self._refresh_session()
 
-                async with self.session.get(
-                    "https://api.dexscreener.com/latest/dex/search?q=solana%20new",
-                    timeout=aiohttp.ClientTimeout(total=15)) as r:
-                    if r.status == 200:
-                        data = await r.json()
-                        for pair in data.get("pairs", [])[:30]:
-                            if pair.get("chainId") != "solana":
-                                continue
-                            base = pair.get("baseToken", {})
-                            addr = base.get("address", "")
-                            if not addr or addr in self.seen_tokens or addr in self.blocked_tokens:
-                                continue
-                            if not is_valid_solana_address(addr):
-                                continue
-                            self.seen_tokens.add(addr)
-                            td = self._pair_to_data(pair)
-                            if td:
-                                if self._check_impersonator(td):
+                try:
+                    async with self.session.get(
+                        "https://api.dexscreener.com/token-profiles/latest/v1",
+                        timeout=aiohttp.ClientTimeout(total=15)) as r:
+                        if r.status == 200:
+                            data = await r.json()
+                            for item in data:
+                                try:
+                                    chain = item.get("chainId", "")
+                                    addr = item.get("tokenAddress", "")
+                                    if chain != "solana":
+                                        continue
+                                    await self._process_token(addr, "dexscreener")
+                                except Exception:
                                     continue
-                                if self._check_volume_drop(td):
+                except Exception as e:
+                    logger.error("DexScreener profiles error: " + str(e)[:80])
+
+                try:
+                    async with self.session.get(
+                        "https://api.dexscreener.com/latest/dex/search?q=solana%20new",
+                        timeout=aiohttp.ClientTimeout(total=15)) as r:
+                        if r.status == 200:
+                            data = await r.json()
+                            for pair in data.get("pairs", [])[:30]:
+                                try:
+                                    if pair.get("chainId") != "solana":
+                                        continue
+                                    base = pair.get("baseToken", {})
+                                    addr = base.get("address", "")
+                                    if not addr:
+                                        continue
+                                    if addr in self.seen_tokens or addr in self.blocked_tokens:
+                                        continue
+                                    if not is_valid_solana_address(addr):
+                                        continue
+                                    self.seen_tokens.add(addr)
+                                    td = self._pair_to_data(pair)
+                                    if td:
+                                        if self._check_impersonator(td):
+                                            continue
+                                        if self._check_volume_drop(td):
+                                            continue
+                                        td["source"] = "dexscreener"
+                                        td["discovered_at"] = current_timestamp()
+                                        self.scan_count += 1
+                                        log_scan(addr, "Trending: " + td.get("symbol", "???"))
+                                        await self._notify(td)
+                                except Exception:
                                     continue
-                                td["source"] = "dexscreener"
-                                td["discovered_at"] = current_timestamp()
-                                log_scan(addr, "Trending: " + td.get("symbol", "???"))
-                                await self._notify(td)
+                except Exception as e:
+                    logger.error("DexScreener search error: " + str(e)[:80])
+
             except Exception as e:
-                logger.error("DexScreener error: " + str(e))
-            if len(self.seen_tokens) > 50000:
-                self.seen_tokens.clear()
+                logger.error("DexScreener error: " + str(e)[:80])
             await asyncio.sleep(30)
+
     async def _poll_jupiter(self):
         while self.running:
             try:
@@ -264,7 +330,7 @@ class TokenScanner:
                             if a and a not in self.seen_tokens:
                                 self.seen_tokens.add(a)
             except Exception as e:
-                logger.error("Jupiter poll error: " + str(e))
+                logger.error("Jupiter poll error: " + str(e)[:80])
             await asyncio.sleep(120)
 
     async def _poll_pumpfun(self):
@@ -277,31 +343,35 @@ class TokenScanner:
                         data = await r.json()
                         coins = data if isinstance(data, list) else data.get("coins", [])
                         for coin in coins[:20]:
-                            addr = coin.get("mint", "") or coin.get("address", "")
-                            if not addr or addr in self.seen_tokens or addr in self.blocked_tokens:
+                            try:
+                                addr = coin.get("mint", "") or coin.get("address", "")
+                                if not addr or addr in self.seen_tokens or addr in self.blocked_tokens:
+                                    continue
+                                if not is_valid_solana_address(addr):
+                                    continue
+                                self.seen_tokens.add(addr)
+                                mcap = float(coin.get("usd_market_cap", 0) or 0)
+                                supply = float(coin.get("total_supply", 1) or 1)
+                                td = {
+                                    "address": addr, "name": coin.get("name", "Unknown"),
+                                    "symbol": coin.get("symbol", "???"), "decimals": 9,
+                                    "price_usd": mcap / supply if supply > 0 else 0,
+                                    "market_cap": mcap, "volume_24h": 0,
+                                    "liquidity": mcap * 0.1, "holder_count": 0,
+                                    "created_at": current_timestamp(),
+                                    "website": coin.get("website", ""), "twitter": coin.get("twitter", ""),
+                                    "telegram": coin.get("telegram", ""),
+                                    "buys_1h": 0, "sells_1h": 0,
+                                    "price_change_5m": 0, "price_change_1h": 0, "price_change_24h": 0,
+                                    "source": "pumpfun", "discovered_at": current_timestamp(),
+                                }
+                                if self._check_impersonator(td):
+                                    continue
+                                self.scan_count += 1
+                                log_scan(addr, "PumpFun: " + td.get("symbol", "???"))
+                                await self._notify(td)
+                            except Exception:
                                 continue
-                            if not is_valid_solana_address(addr):
-                                continue
-                            self.seen_tokens.add(addr)
-                            mcap = float(coin.get("usd_market_cap", 0) or 0)
-                            supply = float(coin.get("total_supply", 1) or 1)
-                            td = {
-                                "address": addr, "name": coin.get("name", "Unknown"),
-                                "symbol": coin.get("symbol", "???"), "decimals": 9,
-                                "price_usd": mcap / supply if supply > 0 else 0,
-                                "market_cap": mcap, "volume_24h": 0,
-                                "liquidity": mcap * 0.1, "holder_count": 0,
-                                "created_at": current_timestamp(),
-                                "website": coin.get("website", ""), "twitter": coin.get("twitter", ""),
-                                "telegram": coin.get("telegram", ""),
-                                "buys_1h": 0, "sells_1h": 0,
-                                "price_change_5m": 0, "price_change_1h": 0, "price_change_24h": 0,
-                                "source": "pumpfun", "discovered_at": current_timestamp(),
-                            }
-                            if self._check_impersonator(td):
-                                continue
-                            log_scan(addr, "PumpFun: " + td.get("symbol", "???"))
-                            await self._notify(td)
             except Exception as e:
                 logger.debug("PumpFun error: " + str(e)[:50])
             await asyncio.sleep(15)
@@ -396,7 +466,7 @@ class TokenScanner:
                     return self._pair_to_data(best_pair)
             return None
         except Exception as e:
-            logger.error("DexScreener error: " + str(e))
+            logger.error("DexScreener error: " + str(e)[:50])
             return None
 
     def _pair_to_data(self, pair):
