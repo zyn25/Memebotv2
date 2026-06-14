@@ -1,4 +1,4 @@
-# 🎯 Meme Coin Sniper Bot
+# 🎯 Sniper v2
 
 Solana meme coin sniper bot with 12-layer rugpull detection, real-time scanning, and auto trading via Jupiter aggregator.
 
