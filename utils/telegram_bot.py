@@ -212,58 +212,69 @@ class TelegramBot:
 
     def _register_handlers(self):
         r = self.router
-        
 
         @r.message(Command("start"))
-            async def h_start(msg: Message):
-            if not self._auth(msg):
-                return
-            await msg.answer("\U0001f3af <b>Auto Sniper Bot</b>\n\nBot aktif!\nKetik /help", parse_mode="HTML", reply_markup=self._main_kb())
-
-        @r.message(Command("help"))
-            async def h_help(msg: Message):
+        async def h_start(msg: Message):
             if not self._auth(msg):
                 return
             await msg.answer(
-                "\U0001f916 <b>AUTO SNIPER BOT</b>\n" + "=" * 28 + "\n\n"
-                + "\U0001f4ca <b>Monitoring</b>\n"
-                + "/stats /balance /positions /history\n"
-                + "/scanner /config /portfolio\n\n"
-                + "\u23f8\ufe0f <b>Control</b>\n"
-                + "/pause /resume /stop\n\n"
-                + "\U0001f4b0 <b>Trading</b>\n"
-                + "/buy ADDRESS SOL\n/sell TOKEN\n/sellall\n\n"
-                + "\U0001f6e1\ufe0f <b>Risk</b>\n"
-                + "/setsl N /settp N /setsize N\n\n"
-                + "\U0001f50d <b>Analysis</b>\n"
-                + "/rugcheck ADDRESS\n/ai ADDRESS\n\n"
-                + "\U0001f43b <b>Whale</b>\n"
-                + "/whales /whaletrades /copytrades\n"
-                + "/track ADDRESS /whalestats\n\n"
-                + "\U0001f4c8 <b>Reports</b>\n"
-                + "/daily /weekly /journal /pnl\n\n"
-                + "\U0001f4cb <b>Token List</b>\n"
-                + "/blacklist /whitelist\n\n"
-                + "\U0001f4c8 <b>Chart</b>\n/chart ADDRESS\n\n"
-                + "\U0001f514 <b>Alerts</b>\n/alerts\n\n"
-                + "\U0001f3af <b>Sniper</b>\n/sniper\n\n"
-                + "\U0001f4ca <b>Analytics</b>\n"
-                + "/top /worst /streak /roi\n"
-                + "/risk /speed /status\n\n"
-                + "\U0001f50d <b>Market</b>\n"
-                + "/trending /gas\n\n"
-                + "\U0001f4b0 <b>Finance</b>\n"
-                + "/withdraw\n\n"
-                + "\U0001f507 <b>Settings</b>\n"
-                + "/mute /unmute /version\n\n"
-                + "\u2022 Paste address = auto rugcheck\n"
-                + "\u2022 /buy ADDRESS = default amount\n\n"
-                + "\u26a0\ufe0f <b>DISCLAIMER</b>\n"
-                + "Bot ini bukan penasihat keuangan.\n"
-                + "Crypto berisiko tinggi.\n"
-                + "Hanya pakai dana yang siap hilang.\n"
-                + "Selalu DYOR dan pakai stop loss.",
+                "🤖 <b>AUTO SNIPER BOT</b>\n" + "=" * 28 + "\n\n"
+                "Bot aktif!\nKetik /help",
+                parse_mode="HTML",
+                reply_markup=self._main_kb(),
+            )
+
+        @r.message(Command("help"))
+        async def h_help(msg: Message):
+            if not self._auth(msg):
+                return
+            await msg.answer(
+                "🤖 <b>AUTO SNIPER BOT</b>\n" + "=" * 28 + "\n\n"
+                "📊 <b>Monitoring</b>\n"
+                "/stats /balance /positions /history\n"
+                "/scanner /config /portfolio\n\n"
+                "⏸️ <b>Control</b>\n"
+                "/pause /resume /stop\n\n"
+                "💰 <b>Trading</b>\n"
+                "/buy ADDRESS SOL\n/sell TOKEN\n/sellall\n\n"
+                "🛡️ <b>Risk</b>\n"
+                "/setsl N /settp N /setsize N\n"
+                "/setconcurrent N /setslippage N\n"
+                "/setmaxrug N /setminliq N /setminholders N\n\n"
+                "🔍 <b>Analysis</b>\n"
+                "/rugcheck ADDRESS\n/ai ADDRESS\n\n"
+                "🐻 <b>Whale</b>\n"
+                "/whales /whaletrades /copytrades\n"
+                "/track ADDRESS /whalestats\n\n"
+                "📈 <b>Reports</b>\n"
+                "/daily /weekly /journal /pnl\n\n"
+                "📋 <b>Token List</b>\n"
+                "/blacklist /whitelist\n\n"
+                "📈 <b>Chart</b>\n"
+                "/chart ADDRESS\n\n"
+                "🔔 <b>Alerts</b>\n"
+                "/alerts\n\n"
+                "🎯 <b>Sniper</b>\n"
+                "/sniper\n\n"
+                "📊 <b>Analytics</b>\n"
+                "/top /worst /streak /roi\n"
+                "/risk /speed /status\n\n"
+                "🔍 <b>Market</b>\n"
+                "/trending /gas\n\n"
+                "💰 <b>Finance</b>\n"
+                "/withdraw\n\n"
+                "🔇 <b>Settings</b>\n"
+                "/mute /unmute /version\n\n"
+                "• Paste address = auto rugcheck\n"
+                "• /buy ADDRESS = default amount\n\n"
+                "⚠️ <b>DISCLAIMER</b>\n"
+                "Bot ini bukan penasihat keuangan.\n"
+                "Crypto berisiko tinggi.\n"
+                "Hanya pakai dana yang siap hilang.\n"
+                "Selalu DYOR dan pakai stop loss.",
                 parse_mode="HTML", reply_markup=self._main_kb())
+
+
 
         @r.message(F.text == "\U0001f4ca Stats")
         @r.message(Command("stats"))
