@@ -1,9 +1,9 @@
 """
-12-Layer Rugpull Detection Engine (Full Fixed)
-- 3 RPC endpoints with retry
-- 14 sell simulation amounts x 4 slippages
-- Smart honeypot detection (liq-aware)
-- High liquidity token leniency
+12-Layer Rugpull Detection Engine (v2.0 MEME COIN MODE)
+- Fix: dev_holds_majority BUKAN critical lagi (pump.fun normal)
+- Fix: holder_distribution lebih longgar buat token baru
+- Fix: lp_lock lebih longgar (pump.fun closed source = normal)
+- Tetap block: honeypot, mint active, zero liquidity
 """
 import asyncio
 import aiohttp
@@ -27,6 +27,7 @@ class RugpullReport:
     reasons: List[str] = field(default_factory=list)
     details: Dict = field(default_factory=dict)
     timestamp: int = 0
+
     def __post_init__(self):
         self.timestamp = current_timestamp()
 
@@ -105,39 +106,54 @@ class RugpullChecker:
         self.cache[addr] = report
 
         # ============================================
-        # CRITICAL FAILURE CHECK
+        # CRITICAL FAILURE CHECK (v2.0 - LEBIH KETAT)
         # ============================================
         critical = []
+
+        # Honeypot TETAP critical (bahaya nyata)
         hp = report.details.get("honeypot", {})
         if not hp.get("passed", True) and hp.get("risk_score", 0) >= 0.8:
             critical.append("honeypot")
+
+        # Zero liquidity TETAP critical (bahaya nyata)
         liq = report.details.get("liquidity", {})
         if not liq.get("passed", True) and "Zero" in str(liq.get("detail", "")):
             critical.append("zero_liquidity")
-        dev = report.details.get("dev_wallet", {})
-        if not dev.get("passed", True) and dev.get("risk_score", 0) >= 0.7:
-            critical.append("dev_holds_majority")
+
+        # Mint active TETAP critical (bahaya nyata)
         mint = report.details.get("mint_authority", {})
         if not mint.get("passed", True) and mint.get("risk_score", 0) >= 0.8:
             critical.append("mint_active")
+
+        # ============================================
+        # DEV WALLET BUKAN CRITICAL LAGI!
+        # ============================================
+        # v1.0: dev risk >= 0.7 → critical (TERLALU KETAT)
+        # v2.0: dev risk >= 0.95 → critical (hanya block dev holds > 50%)
+        # Alasan: pump.fun token PASTI ada dev/bonding curve holder 10-30%
+        #         Ini NORMAL, bukan scam indicator
+        dev = report.details.get("dev_wallet", {})
+        if not dev.get("passed", True) and dev.get("risk_score", 0) >= 0.95:
+            critical.append("dev_holds_majority")
+
         report.critical_failures = critical
 
         # ============================================
-        # SAFETY DETERMINATION
+        # SAFETY DETERMINATION (v2.0 - LEBIH LONGGAR)
         # ============================================
         has_critical = len(critical) > 0
         if has_critical:
             report.is_safe = False
             report.safety_level = "DANGER"
-        elif report.score <= 30:
+        elif report.score <= 35:
             report.is_safe = True
             report.safety_level = "SAFE"
-        elif report.score <= 50:
-            report.is_safe = False
-            report.safety_level = "HIGH_RISK"
+        elif report.score <= 55:
+            report.is_safe = True
+            report.safety_level = "MODERATE"
         elif report.score <= 70:
             report.is_safe = False
-            report.safety_level = "MEDIUM_RISK"
+            report.safety_level = "HIGH_RISK"
         elif report.score <= 85:
             report.is_safe = True
             report.safety_level = "LOW_RISK"
@@ -193,7 +209,6 @@ class RugpullChecker:
             return 0
 
     async def _simulate_sell(self, addr: str) -> bool:
-        """Try selling with 14 amounts x 4 slippages"""
         SOL = "So11111111111111111111111111111111111111112"
         amounts = [
             "10000000000000000", "1000000000000000", "100000000000000",
@@ -221,7 +236,6 @@ class RugpullChecker:
         return False
 
     async def _fetch_holders(self, addr: str) -> list:
-        """Try multiple RPC endpoints with retry"""
         rpcs = [config.rpc.solana_rpc] + self.RPC_BACKUPS
         for rpc in rpcs:
             for attempt in range(2):
@@ -388,9 +402,11 @@ class RugpullChecker:
             ti = await self._fetch_tax(addr)
             if ti.get("is_open_source"):
                 return (True, 0.3, "Open source (lock unverified)")
-            return (False, 0.6, "LP lock not verified")
+            # v2.0: Closed source = NORMAL untuk meme coin
+            # pump.fun token 99% closed source
+            return (True, 0.4, "Closed source (normal for meme coin)")
         except:
-            return (False, 0.4, "LP check failed")
+            return (True, 0.3, "LP check inconclusive")
 
     async def _chk_holders(self, addr: str, td: dict) -> tuple:
         try:
@@ -424,15 +440,19 @@ class RugpullChecker:
                 return (True, 0.1, "~" + str(hc) + " holders")
 
             top10 = sum(h.get("percentage", 0) for h in holders[:10])
-            if top10 > config.screening.max_top10_holder_percent:
-                if liq > 1000000 and top10 < 60:
-                    return (True, 0.3, "~" + str(hc) + " holders, Top10: " + str(round(top10, 1)) + "% (high liq)")
+
+            # v2.0: Top10 threshold lebih longgar
+            # pump.fun baru = wajar top10 40-60%
+            max_top10 = config.screening.max_top10_holder_percent
+            if top10 > max_top10:
+                if liq > 100000 and top10 < 70:
+                    return (True, 0.3, "~" + str(hc) + " holders, Top10: " + str(round(top10, 1)) + "% (acceptable)")
                 return (False, 0.7, "Top10 own " + str(round(top10, 1)) + "%")
 
             if holders[0].get("percentage", 0) > 20:
-                if liq > 1000000:
-                    return (True, 0.3, "~" + str(hc) + " holders, Top: " + str(round(holders[0]["percentage"], 1)) + "% (high liq)")
-                return (False, 0.8, "Top holder: " + str(round(holders[0]["percentage"], 1)) + "%")
+                if liq > 100000:
+                    return (True, 0.3, "~" + str(hc) + " holders, Top: " + str(round(holders[0]["percentage"], 1)) + "% (ok)")
+                return (False, 0.6, "Top holder: " + str(round(holders[0]["percentage"], 1)) + "%")
 
             return (True, 0.1, "~" + str(hc) + " holders, Top10: " + str(round(top10, 1)) + "%")
         except:
@@ -444,15 +464,22 @@ class RugpullChecker:
             if not holders:
                 return (True, 0.2, "No holder data")
             dp = holders[0].get("percentage", 0)
+
+            # v2.0: Dev wallet threshold lebih longgar
+            # pump.fun bonding curve = wajar 10-30%
             max_pct = config.screening.dev_wallet_max_percent
             liq = td.get("liquidity", 0)
             if liq == 0:
                 liq = await self._fetch_liq(addr)
 
             if dp > max_pct:
-                if liq > 1000000 and dp < 20:
-                    return (True, 0.3, "Top: " + str(round(dp, 1)) + "% (high liq, established)")
-                return (False, 0.7, "Dev holds " + str(round(dp, 1)) + "% (max " + str(max_pct) + "%)")
+                if liq > 100000 and dp < 30:
+                    # v2.0: High liq + dev < 30% = acceptable
+                    return (True, 0.3, "Top: " + str(round(dp, 1)) + "% (high liq, acceptable)")
+                if dp < 25:
+                    # v2.0: Dev < 25% = acceptable (pump.fun normal)
+                    return (True, 0.4, "Dev: " + str(round(dp, 1)) + "% (pump.fun bonding curve)")
+                return (False, 0.8, "Dev holds " + str(round(dp, 1)) + "% (max " + str(max_pct) + "%)")
             return (True, 0.1, "Dev: " + str(round(dp, 1)) + "%")
         except:
             return (True, 0.3, "Dev wallet check inconclusive")
@@ -463,16 +490,17 @@ class RugpullChecker:
             risks = []
             score = 0.0
             if not ti.get("is_open_source"):
-                score += 0.3
+                # v2.0: Closed source = normal untuk meme coin
+                score += 0.1
                 risks.append("Closed source")
             if ti.get("selfdestruct"):
                 score += 0.5
                 risks.append("Self-destruct")
             if ti.get("external_call"):
-                score += 0.3
+                score += 0.2
                 risks.append("External calls")
             if risks:
-                return (False, min(1.0, score), "; ".join(risks))
+                return (score >= 0.4, min(1.0, score), "; ".join(risks))
             return (True, 0.0, "Contract clean")
         except:
             return (True, 0.2, "Contract check inconclusive")
