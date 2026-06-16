@@ -1,5 +1,9 @@
 """
-Trade Executor via Jupiter - FULL CLEAN
+Trade Executor via Jupiter - v2.0 RELIABLE
+- Multiple Jupiter API endpoints (fallback)
+- DNS retry logic
+- Better timeout handling
+- DexScreener price fallback
 """
 import asyncio
 import aiohttp
@@ -14,17 +18,34 @@ from utils.helpers import lamports_to_sol, sol_to_lamports, current_timestamp
 class TradeExecutor:
     def __init__(self):
         self.session = None
-        self.jupiter = "https://quote-api.jup.ag/v6"
+        self.jupiter_endpoints = [
+            "https://quote-api.jup.ag/v6",
+            "https://jupiter-swap-api.quiknode.pro/v6",
+            "https://jupiter-api.bonfida.com/v6",
+        ]
+        self.current_jupiter = 0
         self.SOL = "So11111111111111111111111111111111111111112"
         self.retries = 3
         self.bot_instance = None
+        self.buy_count = 0
+        self.sell_count = 0
+        self.fail_count = 0
 
     async def initialize(self):
-        self.session = aiohttp.ClientSession()
+        self.session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=20)
+        )
 
     async def close(self):
         if self.session:
             await self.session.close()
+
+    def _get_jupiter(self):
+        return self.jupiter_endpoints[self.current_jupiter % len(self.jupiter_endpoints)]
+
+    def _rotate_jupiter(self):
+        self.current_jupiter += 1
+        logger.info("Jupiter rotated to: " + self._get_jupiter())
 
     # ====================================================
     #  BUY
@@ -35,24 +56,37 @@ class TradeExecutor:
             return await self._sim_buy(token_address, sol_amount)
         sl = slippage_bps or config.trading.slippage_bps
         lam = sol_to_lamports(sol_amount)
+
         for attempt in range(self.retries):
             try:
-                q = await self._quote(self.SOL, token_address, str(lam), sl)
+                q = await self._quote_with_retry(self.SOL, token_address, str(lam), sl)
                 if not q:
-                    await asyncio.sleep(1)
+                    logger.warning("Buy quote failed attempt " + str(attempt + 1) + "/" + str(self.retries))
+                    self._rotate_jupiter()
+                    await asyncio.sleep(2)
                     continue
+
                 out = int(q.get("outAmount", 0))
                 if out == 0:
+                    logger.warning("Buy quote returned 0 tokens")
                     continue
+
                 pi = float(q.get("priceImpactPct", 0))
                 if pi > 10:
+                    logger.warning("Price impact too high: " + str(pi) + "%")
                     return None
-                sw = await self._swap_tx(q)
+
+                sw = await self._swap_tx_with_retry(q)
                 if not sw:
+                    logger.warning("Swap tx failed attempt " + str(attempt + 1))
+                    self._rotate_jupiter()
+                    await asyncio.sleep(2)
                     continue
+
                 tx = await self._sign_send(sw)
                 if tx:
                     price = sol_amount / lamports_to_sol(out) if out > 0 else 0
+                    self.buy_count += 1
                     log_buy(token_address, sol_amount, price)
                     return {
                         "success": True, "tx_hash": tx,
@@ -61,37 +95,46 @@ class TradeExecutor:
                         "price_impact": pi, "timestamp": current_timestamp(),
                     }
             except Exception as e:
-                logger.error("Buy attempt " + str(attempt + 1) + ": " + str(e))
+                logger.error("Buy attempt " + str(attempt + 1) + "/" + str(self.retries) + ": " + str(e))
+                self._rotate_jupiter()
                 await asyncio.sleep(2)
+
+        self.fail_count += 1
         return None
 
     async def _sim_buy(self, addr, sol):
-        """DRY RUN BUY - try Jupiter quote first, fallback to DexScreener"""
+        """DRY RUN BUY - Jupiter quote + DexScreener fallback"""
         try:
             lam = sol_to_lamports(sol)
             slippages = [500, 1000, 2000, 5000]
-            for sl in slippages:
-                try:
-                    q = await self._quote(self.SOL, addr, str(lam), sl)
-                    if q:
-                        out = int(q.get("outAmount", 0))
-                        if out > 0:
-                            price = sol / lamports_to_sol(out)
-                            logger.info("DRY BUY: " + str(round(sol, 4)) + " SOL -> " + str(out) + " tokens")
-                            return {
-                                "success": True,
-                                "tx_hash": "DRY_" + str(current_timestamp()),
-                                "token_address": addr,
-                                "sol_spent": sol,
-                                "tokens_received": out,
-                                "price": price,
-                                "price_impact": float(q.get("priceImpactPct", 0)),
-                                "timestamp": current_timestamp(),
-                                "dry_run": True,
-                            }
-                except:
-                    continue
-                await asyncio.sleep(0.2)
+
+            # Try all Jupiter endpoints
+            for ep_idx in range(len(self.jupiter_endpoints)):
+                for sl in slippages:
+                    try:
+                        q = await self._quote_direct(
+                            self.jupiter_endpoints[ep_idx],
+                            self.SOL, addr, str(lam), sl
+                        )
+                        if q:
+                            out = int(q.get("outAmount", 0))
+                            if out > 0:
+                                price = sol / lamports_to_sol(out)
+                                logger.info("DRY BUY (jupiter " + str(ep_idx) + "): " + str(round(sol, 4)) + " SOL -> " + str(out) + " tokens")
+                                return {
+                                    "success": True,
+                                    "tx_hash": "DRY_" + str(current_timestamp()),
+                                    "token_address": addr,
+                                    "sol_spent": sol,
+                                    "tokens_received": out,
+                                    "price": price,
+                                    "price_impact": float(q.get("priceImpactPct", 0)),
+                                    "timestamp": current_timestamp(),
+                                    "dry_run": True,
+                                }
+                    except:
+                        continue
+                    await asyncio.sleep(0.2)
 
             # DexScreener fallback
             dex_price_sol = 0.0
@@ -155,6 +198,7 @@ class TradeExecutor:
                 "timestamp": current_timestamp(),
                 "dry_run": True,
             }
+
     # ====================================================
     #  SELL
     # ====================================================
@@ -163,21 +207,30 @@ class TradeExecutor:
         if config.dry_run:
             return await self._sim_sell(token_address, token_amount)
         sl = slippage_bps or config.trading.slippage_bps
+
         for attempt in range(self.retries):
             try:
-                q = await self._quote(token_address, self.SOL, str(token_amount), sl)
+                q = await self._quote_with_retry(token_address, self.SOL, str(token_amount), sl)
                 if not q:
-                    await asyncio.sleep(1)
+                    logger.warning("Sell quote failed attempt " + str(attempt + 1))
+                    self._rotate_jupiter()
+                    await asyncio.sleep(2)
                     continue
+
                 out = int(q.get("outAmount", 0))
                 if out == 0:
                     continue
-                sw = await self._swap_tx(q)
+
+                sw = await self._swap_tx_with_retry(q)
                 if not sw:
+                    self._rotate_jupiter()
+                    await asyncio.sleep(2)
                     continue
+
                 tx = await self._sign_send(sw)
                 if tx:
                     sol_r = lamports_to_sol(out)
+                    self.sell_count += 1
                     log_sell(token_address, sol_r, 0)
                     return {
                         "success": True, "tx_hash": tx,
@@ -188,35 +241,43 @@ class TradeExecutor:
                     }
             except Exception as e:
                 logger.error("Sell attempt " + str(attempt + 1) + ": " + str(e))
+                self._rotate_jupiter()
                 await asyncio.sleep(2)
+
+        self.fail_count += 1
         return None
 
     async def _sim_sell(self, addr, amt):
-        """DRY RUN SELL - real quote or simulated return"""
-        # Try real Jupiter quote
+        """DRY RUN SELL - real quote or simulated"""
         slippages = [500, 1000, 2000, 5000]
-        for sl in slippages:
-            try:
-                q = await self._quote(addr, self.SOL, str(amt), sl)
-                if q:
-                    out = int(q.get("outAmount", 0))
-                    if out > 0:
-                        sol_r = lamports_to_sol(out)
-                        logger.info("DRY SELL: " + str(amt) + " -> " + str(round(sol_r, 4)) + " SOL")
-                        return {
-                            "success": True,
-                            "tx_hash": "DRY_" + str(current_timestamp()),
-                            "token_address": addr,
-                            "tokens_sold": amt,
-                            "sol_received": sol_r,
-                            "timestamp": current_timestamp(),
-                            "dry_run": True,
-                        }
-            except:
-                continue
-            await asyncio.sleep(0.2)
 
-        # No real quote - simulate realistic return
+        # Try all Jupiter endpoints
+        for ep_idx in range(len(self.jupiter_endpoints)):
+            for sl in slippages:
+                try:
+                    q = await self._quote_direct(
+                        self.jupiter_endpoints[ep_idx],
+                        addr, self.SOL, str(amt), sl
+                    )
+                    if q:
+                        out = int(q.get("outAmount", 0))
+                        if out > 0:
+                            sol_r = lamports_to_sol(out)
+                            logger.info("DRY SELL: " + str(amt) + " -> " + str(round(sol_r, 4)) + " SOL")
+                            return {
+                                "success": True,
+                                "tx_hash": "DRY_" + str(current_timestamp()),
+                                "token_address": addr,
+                                "tokens_sold": amt,
+                                "sol_received": sol_r,
+                                "timestamp": current_timestamp(),
+                                "dry_run": True,
+                            }
+                except:
+                    continue
+                await asyncio.sleep(0.2)
+
+        # Simulate realistic return
         base_sol = 0.06
         if self.bot_instance:
             try:
@@ -227,7 +288,6 @@ class TradeExecutor:
             except:
                 pass
 
-        # Realistic simulation: 40% gain, 40% loss, 20% bigger
         change = random.uniform(-0.3, 0.5)
         sim_return = base_sol * (1 + change)
         if sim_return < 0:
@@ -245,30 +305,71 @@ class TradeExecutor:
         }
 
     # ====================================================
-    #  JUPITER API
+    #  JUPITER API (with retry + failover)
     # ====================================================
 
-    async def _quote(self, inp, out, amt, sl=500):
+    async def _quote_with_retry(self, inp, out, amt, sl=500):
+        """Try quote on all Jupiter endpoints with retry"""
+        for ep_idx in range(len(self.jupiter_endpoints)):
+            ep = self.jupiter_endpoints[(self.current_jupiter + ep_idx) % len(self.jupiter_endpoints)]
+            for attempt in range(2):
+                try:
+                    q = await self._quote_direct(ep, inp, out, amt, sl)
+                    if q:
+                        return q
+                except:
+                    pass
+                await asyncio.sleep(0.5)
+        return None
+
+    async def _quote_direct(self, endpoint, inp, out, amt, sl=500):
+        """Direct quote call to specific endpoint"""
         try:
             async with self.session.get(
-                self.jupiter + "/quote",
+                endpoint + "/quote",
                 params={
                     "inputMint": inp, "outputMint": out,
                     "amount": amt, "slippageBps": sl,
                     "onlyDirectRoutes": "false",
                 },
-                timeout=aiohttp.ClientTimeout(total=10),
+                timeout=aiohttp.ClientTimeout(total=12),
             ) as r:
                 if r.status == 200:
-                    return await r.json()
+                    data = await r.json()
+                    if data and data.get("outAmount"):
+                        return data
+                elif r.status == 429:
+                    logger.warning("Jupiter rate limit on " + endpoint[:40])
+                    await asyncio.sleep(3)
             return None
-        except:
+        except asyncio.TimeoutError:
+            logger.debug("Jupiter timeout: " + endpoint[:40])
+            return None
+        except aiohttp.ClientConnectorError:
+            logger.debug("Jupiter DNS fail: " + endpoint[:40])
+            return None
+        except Exception as e:
+            logger.debug("Jupiter error: " + endpoint[:40] + " -> " + str(e)[:50])
             return None
 
-    async def _swap_tx(self, quote):
+    async def _swap_tx_with_retry(self, quote):
+        """Try swap transaction on all Jupiter endpoints"""
+        for ep_idx in range(len(self.jupiter_endpoints)):
+            ep = self.jupiter_endpoints[(self.current_jupiter + ep_idx) % len(self.jupiter_endpoints)]
+            try:
+                result = await self._swap_tx_direct(ep, quote)
+                if result:
+                    return result
+            except:
+                pass
+            await asyncio.sleep(0.5)
+        return None
+
+    async def _swap_tx_direct(self, endpoint, quote):
+        """Direct swap transaction call"""
         try:
             async with self.session.post(
-                self.jupiter + "/swap",
+                endpoint + "/swap",
                 json={
                     "quoteResponse": quote,
                     "userPublicKey": config.wallet.address,
@@ -282,9 +383,16 @@ class TradeExecutor:
                 if r.status == 200:
                     return await r.json()
             return None
-        except Exception as e:
-            logger.error("Swap tx error: " + str(e))
+        except:
             return None
+
+    async def _quote(self, inp, out, amt, sl=500):
+        """Legacy quote method - uses retry"""
+        return await self._quote_with_retry(inp, out, amt, sl)
+
+    async def _swap_tx(self, quote):
+        """Legacy swap method - uses retry"""
+        return await self._swap_tx_with_retry(quote)
 
     async def _sign_send(self, swap_result):
         try:
@@ -316,16 +424,23 @@ class TradeExecutor:
                     "maxRetries": 3,
                 }],
             }
-            async with self.session.post(
-                config.rpc.solana_rpc, json=payload,
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as r:
-                data = await r.json()
-                if "result" in data:
-                    tx_hash = data["result"]
-                    logger.info("TX sent: " + tx_hash)
-                    return tx_hash
-                logger.error("Send error: " + str(data.get("error", {})))
+
+            # Try primary RPC + backups
+            rpcs = [config.rpc.solana_rpc, "https://rpc.ankr.com/solana", "https://api.mainnet-beta.solana.com"]
+            for rpc in rpcs:
+                try:
+                    async with self.session.post(
+                        rpc, json=payload,
+                        timeout=aiohttp.ClientTimeout(total=30),
+                    ) as r:
+                        data = await r.json()
+                        if "result" in data:
+                            tx_hash = data["result"]
+                            logger.info("TX sent: " + tx_hash)
+                            return tx_hash
+                        logger.debug("Send error on " + rpc[:30] + ": " + str(data.get("error", {})))
+                except:
+                    continue
             return None
         except ImportError as e:
             logger.error("Missing dep: " + str(e))
@@ -340,15 +455,19 @@ class TradeExecutor:
 
     async def get_token_price(self, addr):
         """Get token price in SOL - Jupiter + DexScreener fallback"""
-        # Source 1: Jupiter
-        try:
-            q = await self._quote(addr, self.SOL, "1000000000", 100)
-            if q:
-                out = int(q.get("outAmount", 0))
-                if out > 0:
-                    return lamports_to_sol(out)
-        except:
-            pass
+        # Source 1: Jupiter (all endpoints)
+        for ep_idx in range(len(self.jupiter_endpoints)):
+            try:
+                q = await self._quote_direct(
+                    self.jupiter_endpoints[ep_idx],
+                    addr, self.SOL, "1000000000", 100
+                )
+                if q:
+                    out = int(q.get("outAmount", 0))
+                    if out > 0:
+                        return lamports_to_sol(out)
+            except:
+                continue
 
         # Source 2: DexScreener
         try:
@@ -384,17 +503,20 @@ class TradeExecutor:
         return 150.0
 
     async def get_sol_balance(self):
-        try:
-            payload = {
-                "jsonrpc": "2.0", "id": 1,
-                "method": "getBalance",
-                "params": [config.wallet.address],
-            }
-            async with self.session.post(
-                config.rpc.solana_rpc, json=payload,
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as r:
-                data = await r.json()
-                return lamports_to_sol(data.get("result", {}).get("value", 0))
-        except:
-            return 0.0
+        rpcs = [config.rpc.solana_rpc, "https://rpc.ankr.com/solana"]
+        for rpc in rpcs:
+            try:
+                payload = {
+                    "jsonrpc": "2.0", "id": 1,
+                    "method": "getBalance",
+                    "params": [config.wallet.address],
+                }
+                async with self.session.post(
+                    rpc, json=payload,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as r:
+                    data = await r.json()
+                    return lamports_to_sol(data.get("result", {}).get("value", 0))
+            except:
+                continue
+        return 0.0
