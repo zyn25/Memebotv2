@@ -1,14 +1,11 @@
 """
-Trade Executor via Jupiter - v2.0 RELIABLE
-- Multiple Jupiter API endpoints (fallback)
-- DNS retry logic
-- Better timeout handling
-- DexScreener price fallback
+Trade Executor via Jupiter - v2.1 DNS FIX
 """
 import asyncio
 import aiohttp
 import base64
 import random
+import socket
 from typing import Optional, Dict
 from config import config
 from utils.logger import logger, log_buy, log_sell
@@ -19,6 +16,7 @@ class TradeExecutor:
     def __init__(self):
         self.session = None
         self.jupiter_endpoints = [
+            "https://api.jup.ag/swap/v6",
             "https://quote-api.jup.ag/v6",
             "https://jupiter-swap-api.quiknode.pro/v6",
             "https://jupiter-api.bonfida.com/v6",
@@ -32,9 +30,21 @@ class TradeExecutor:
         self.fail_count = 0
 
     async def initialize(self):
-        self.session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=20)
+        # Resolver DNS pakai Google Public DNS
+        resolver = aiohttp.resolver.AsyncResolver(
+            nameservers=["8.8.8.8", "8.8.4.4", "1.1.1.1"]
         )
+        connector = aiohttp.TCPConnector(
+            resolver=resolver,
+            limit=20,
+            ttl_dns_cache=300,
+            enable_cleanup_closed=True,
+        )
+        self.session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=20),
+            connector=connector,
+        )
+        logger.info("Executor initialized with DNS fix")
 
     async def close(self):
         if self.session:
@@ -108,7 +118,6 @@ class TradeExecutor:
             lam = sol_to_lamports(sol)
             slippages = [500, 1000, 2000, 5000]
 
-            # Try all Jupiter endpoints
             for ep_idx in range(len(self.jupiter_endpoints)):
                 for sl in slippages:
                     try:
@@ -248,10 +257,9 @@ class TradeExecutor:
         return None
 
     async def _sim_sell(self, addr, amt):
-        """DRY RUN SELL - real quote or simulated"""
+        """DRY RUN SELL"""
         slippages = [500, 1000, 2000, 5000]
 
-        # Try all Jupiter endpoints
         for ep_idx in range(len(self.jupiter_endpoints)):
             for sl in slippages:
                 try:
@@ -277,7 +285,6 @@ class TradeExecutor:
                     continue
                 await asyncio.sleep(0.2)
 
-        # Simulate realistic return
         base_sol = 0.06
         if self.bot_instance:
             try:
@@ -305,11 +312,11 @@ class TradeExecutor:
         }
 
     # ====================================================
-    #  JUPITER API (with retry + failover)
+    #  JUPITER API (with DNS fix + retry)
     # ====================================================
 
     async def _quote_with_retry(self, inp, out, amt, sl=500):
-        """Try quote on all Jupiter endpoints with retry"""
+        """Try quote on all endpoints with retry"""
         for ep_idx in range(len(self.jupiter_endpoints)):
             ep = self.jupiter_endpoints[(self.current_jupiter + ep_idx) % len(self.jupiter_endpoints)]
             for attempt in range(2):
@@ -323,7 +330,7 @@ class TradeExecutor:
         return None
 
     async def _quote_direct(self, endpoint, inp, out, amt, sl=500):
-        """Direct quote call to specific endpoint"""
+        """Direct quote call"""
         try:
             async with self.session.get(
                 endpoint + "/quote",
@@ -345,15 +352,15 @@ class TradeExecutor:
         except asyncio.TimeoutError:
             logger.debug("Jupiter timeout: " + endpoint[:40])
             return None
-        except aiohttp.ClientConnectorError:
-            logger.debug("Jupiter DNS fail: " + endpoint[:40])
+        except aiohttp.ClientConnectorError as e:
+            logger.debug("Jupiter connect fail: " + endpoint[:40] + " -> " + str(e)[:50])
             return None
         except Exception as e:
             logger.debug("Jupiter error: " + endpoint[:40] + " -> " + str(e)[:50])
             return None
 
     async def _swap_tx_with_retry(self, quote):
-        """Try swap transaction on all Jupiter endpoints"""
+        """Try swap on all endpoints"""
         for ep_idx in range(len(self.jupiter_endpoints)):
             ep = self.jupiter_endpoints[(self.current_jupiter + ep_idx) % len(self.jupiter_endpoints)]
             try:
@@ -366,7 +373,7 @@ class TradeExecutor:
         return None
 
     async def _swap_tx_direct(self, endpoint, quote):
-        """Direct swap transaction call"""
+        """Direct swap call"""
         try:
             async with self.session.post(
                 endpoint + "/swap",
@@ -385,14 +392,6 @@ class TradeExecutor:
             return None
         except:
             return None
-
-    async def _quote(self, inp, out, amt, sl=500):
-        """Legacy quote method - uses retry"""
-        return await self._quote_with_retry(inp, out, amt, sl)
-
-    async def _swap_tx(self, quote):
-        """Legacy swap method - uses retry"""
-        return await self._swap_tx_with_retry(quote)
 
     async def _sign_send(self, swap_result):
         try:
@@ -425,7 +424,6 @@ class TradeExecutor:
                 }],
             }
 
-            # Try primary RPC + backups
             rpcs = [config.rpc.solana_rpc, "https://rpc.ankr.com/solana", "https://api.mainnet-beta.solana.com"]
             for rpc in rpcs:
                 try:
@@ -454,8 +452,6 @@ class TradeExecutor:
     # ====================================================
 
     async def get_token_price(self, addr):
-        """Get token price in SOL - Jupiter + DexScreener fallback"""
-        # Source 1: Jupiter (all endpoints)
         for ep_idx in range(len(self.jupiter_endpoints)):
             try:
                 q = await self._quote_direct(
@@ -469,7 +465,6 @@ class TradeExecutor:
             except:
                 continue
 
-        # Source 2: DexScreener
         try:
             async with self.session.get(
                 "https://api.dexscreener.com/latest/dex/tokens/" + addr,
