@@ -1,11 +1,15 @@
 """
 Trade Executor via Jupiter - v2.1 DNS FIX
+- Fixed: Removed AsyncResolver (requires aiodns)
+- Fixed: Simple TCPConnector with DNS cache
+- Multiple Jupiter API endpoints (fallback)
+- Better timeout handling
+- DexScreener price fallback
 """
 import asyncio
 import aiohttp
 import base64
 import random
-import socket
 from typing import Optional, Dict
 from config import config
 from utils.logger import logger, log_buy, log_sell
@@ -30,21 +34,12 @@ class TradeExecutor:
         self.fail_count = 0
 
     async def initialize(self):
-        # Resolver DNS pakai Google Public DNS
-        resolver = aiohttp.resolver.AsyncResolver(
-            nameservers=["8.8.8.8", "8.8.4.4", "1.1.1.1"]
-        )
-        connector = aiohttp.TCPConnector(
-            resolver=resolver,
-            limit=20,
-            ttl_dns_cache=300,
-            enable_cleanup_closed=True,
-        )
+        connector = aiohttp.TCPConnector(limit=20, ttl_dns_cache=300)
         self.session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=20),
             connector=connector,
         )
-        logger.info("Executor initialized with DNS fix")
+        logger.info("Executor initialized")
 
     async def close(self):
         if self.session:
@@ -312,7 +307,7 @@ class TradeExecutor:
         }
 
     # ====================================================
-    #  JUPITER API (with DNS fix + retry)
+    #  JUPITER API (with retry + failover)
     # ====================================================
 
     async def _quote_with_retry(self, inp, out, amt, sl=500):
@@ -352,8 +347,8 @@ class TradeExecutor:
         except asyncio.TimeoutError:
             logger.debug("Jupiter timeout: " + endpoint[:40])
             return None
-        except aiohttp.ClientConnectorError as e:
-            logger.debug("Jupiter connect fail: " + endpoint[:40] + " -> " + str(e)[:50])
+        except aiohttp.ClientConnectorError:
+            logger.debug("Jupiter connect fail: " + endpoint[:40])
             return None
         except Exception as e:
             logger.debug("Jupiter error: " + endpoint[:40] + " -> " + str(e)[:50])
